@@ -71,8 +71,8 @@ if uploaded_file is not None:
         r = min(image.size) * 0.02 # Responsive dot size
         draw.ellipse((x-r, y-r, x+r, y+r), fill='red')
 
-    # Display the interactive image
-    value = streamlit_image_coordinates(img_to_draw, key="coords", width='stretch')
+    # Display the interactive image (removed the breaking width parameter here)
+    value = streamlit_image_coordinates(img_to_draw, key="coords")
 
     # Capture the tap coordinates
     if value is not None:
@@ -98,6 +98,7 @@ if uploaded_file is not None:
                 result_image = Image.fromarray(cv2.cvtColor(warped_cv, cv2.COLOR_BGR2RGB))
                 
                 st.subheader("Final Result")
+                # Kept width='stretch' here because st.image supports it natively
                 st.image(result_image, width='stretch')
                 
                 buf = io.BytesIO()
