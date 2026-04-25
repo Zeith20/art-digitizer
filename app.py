@@ -123,7 +123,7 @@ try:
 
         # --- AUTO SCAN ---
         if REMBG_AVAILABLE:
-            if st.button("🌟 Start AI Auto-Scan", use_container_width=True):
+            if st.button("🌟 Start AI Auto-Scan", width='stretch'):
                 with st.spinner('AI analyzing layers...'):
                     cleansed = rembg_remove(original_image)
                     st.session_state.processed_images[f"{file_key}_ai"] = cleansed
@@ -222,7 +222,7 @@ try:
 
         # Warp Execution
         if len(st.session_state.points_map.get(file_key, [])) == 4:
-            if st.button("🚀 Finalize & Flatten Artwork", use_container_width=True, type="primary"):
+            if st.button("🚀 Finalize & Flatten Artwork", width='stretch', type="primary"):
                 with st.spinner("Applying geometry warp..."):
                     image_cv = cv2.cvtColor(np.array(original_image), cv2.COLOR_RGB2BGR)
                     pts_scaled = np.array(st.session_state.points_map[file_key], dtype="float32") * scale_ratio 
@@ -233,14 +233,14 @@ try:
         # --- DISPLAY RESULTS ---
         if f"{file_key}_warp" in st.session_state.processed_images:
             st.subheader("Final Result")
-            st.image(st.session_state.processed_images[f"{file_key}_warp"], use_container_width=True)
+            st.image(st.session_state.processed_images[f"{file_key}_warp"], width='stretch')
             buf = io.BytesIO()
             st.session_state.processed_images[f"{file_key}_warp"].save(buf, format="PNG")
             st.download_button("💾 Download Digitized Scan", buf.getvalue(), f"scan_{current_file.name}.png", "image/png")
 
         if f"{file_key}_ai" in st.session_state.processed_images:
             with st.expander("View AI Background Removal (Cutout)"):
-                st.image(st.session_state.processed_images[f"{file_key}_ai"], use_container_width=True)
+                st.image(st.session_state.processed_images[f"{file_key}_ai"], width='stretch')
     else:
         st.info("Upload images to begin.")
 
