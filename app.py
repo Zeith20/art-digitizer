@@ -15,7 +15,7 @@ def load_rembg():
     try:
         from rembg import remove
         return remove, True
-    except Exception as e:
+    except Exception:
         return None, False
 
 rembg_remove, REMBG_AVAILABLE = load_rembg()
@@ -25,7 +25,7 @@ def load_coords():
     try:
         from streamlit_image_coordinates import streamlit_image_coordinates
         return streamlit_image_coordinates, True
-    except Exception as e:
+    except Exception:
         return None, False
 
 streamlit_image_coordinates, IMAGE_COORDS_AVAILABLE = load_coords()
@@ -63,7 +63,8 @@ def four_point_transform(image, pts):
     M = cv2.getPerspectiveTransform(rect, dst)
     return cv2.warpPerspective(image, M, (maxWidth, maxHeight))
 
-def find_corners_guaranteed(pill_image_with_alpha):
+def find_corners_advanced(pill_image_with_alpha):
+    """Restored high-quality perspective-aware corner detection."""
     img_np = np.array(pill_image_with_alpha)
     if img_np.shape[2] < 4: return None
     alpha = img_np[:, :, 3]
@@ -71,9 +72,19 @@ def find_corners_guaranteed(pill_image_with_alpha):
     cnts, _ = cv2.findContours(alpha, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not cnts: return None
     c = max(cnts, key=cv2.contourArea)
-    rect = cv2.minAreaRect(c)
-    box = cv2.boxPoints(rect)
-    return np.array(box, dtype="float32")
+    
+    # Try poly approximation first
+    peri = cv2.arcLength(c, True)
+    approx = cv2.approxPolyDP(c, 0.02 * peri, True)
+    if len(approx) == 4:
+        return approx.reshape(4, 2).astype("float32")
+        
+    # Fallback to high-quality extreme points of the hull
+    hull = cv2.convexHull(c).reshape(-1, 2)
+    s = hull.sum(axis=1)
+    diff = np.diff(hull, axis=1)
+    # tl, tr, br, bl
+    return np.array([hull[np.argmin(s)], hull[np.argmin(diff)], hull[np.argmax(s)], hull[np.argmax(diff)]], dtype="float32")
 
 # Session State Initialization
 if 'points_map' not in st.session_state: st.session_state.points_map = {}
@@ -122,11 +133,12 @@ try:
             if REMBG_AVAILABLE:
                 if st.button("🚀 Start AI Auto-Digitize", use_container_width=True, type="primary"):
                     try:
-                        with st.spinner('AI analyzing layers...'):
+                        with st.spinner('AI analyzing perspective and layers...'):
                             cleansed = rembg_remove(original_image)
                             st.session_state.processed_images[f"{file_key}_ai"] = cleansed
-                            pts = find_corners_guaranteed(cleansed)
+                            pts = find_corners_advanced(cleansed)
                             if pts is not None:
+                                # Store as scaled ints to prevent jitter
                                 st.session_state.points_map[file_key] = [(int(p[0] / scale_ratio), int(p[1] / scale_ratio)) for p in pts]
                                 image_cv = cv2.cvtColor(np.array(original_image), cv2.COLOR_RGB2BGR)
                                 warped_cv = four_point_transform(image_cv, pts)
@@ -156,43 +168,46 @@ try:
                         st.session_state.is_correcting = False
                         st.rerun()
 
-            # Manual Correction
-            st.divider()
-            # If we are in correcting state, keep expander open
-            expand_it = st.session_state.is_correcting or len(st.session_state.points_map.get(file_key, [])) < 4
-            
-            with st.expander("📍 Fine-tune Artwork Corners", expanded=expand_it):
-                st.write("Click the 4 corners below to fix the AI detection.")
-                current_pts = st.session_state.points_map.get(file_key, [])
-                
-                if IMAGE_COORDS_AVAILABLE:
-                    temp_ui = ui_image.copy()
-                    draw = ImageDraw.Draw(temp_ui)
-                    for i, p in enumerate(current_pts):
-                        draw.ellipse([p[0]-6, p[1]-6, p[0]+6, p[1]+6], fill="red", outline="white", width=2)
-                        draw.text((p[0]+10, p[1]+10), str(i+1), fill="red")
+            # Manual Correction Wrapper (Fragment prevents full page reload)
+            @st.fragment
+            def manual_correction_fragment():
+                st.divider()
+                expand_it = st.session_state.is_correcting or len(st.session_state.points_map.get(file_key, [])) < 4
+                with st.expander("📍 Fine-tune Artwork Corners", expanded=expand_it):
+                    st.write("Click the 4 corners below to fix the AI detection.")
+                    current_pts = st.session_state.points_map.get(file_key, [])
                     
-                    value = streamlit_image_coordinates(temp_ui, key=f"coords_{file_key}")
-                    if value:
-                        new_p = (int(value["x"]), int(value["y"]))
-                        if not current_pts or np.linalg.norm(np.array(new_p) - np.array(current_pts[-1])) > 10:
-                            st.session_state.is_correcting = True
-                            if len(current_pts) < 4:
-                                if file_key not in st.session_state.points_map: st.session_state.points_map[file_key] = []
-                                st.session_state.points_map[file_key].append(new_p)
-                            else:
-                                st.session_state.points_map[file_key] = [new_p]
-                            st.rerun()
-
-                    if len(current_pts) == 4:
-                        if st.button("🚀 Re-Apply Flattening", use_container_width=True, type="primary"):
-                            with st.spinner("Processing..."):
-                                image_cv = cv2.cvtColor(np.array(original_image), cv2.COLOR_RGB2BGR)
-                                pts_scaled = np.array(current_pts, dtype="float32") * scale_ratio 
-                                warped_cv = four_point_transform(image_cv, pts_scaled)
-                                st.session_state.processed_images[f"{file_key}_warp"] = Image.fromarray(cv2.cvtColor(warped_cv, cv2.COLOR_BGR2RGB))
-                                st.session_state.is_correcting = False # Reset on success
+                    if IMAGE_COORDS_AVAILABLE:
+                        temp_ui = ui_image.copy()
+                        draw = ImageDraw.Draw(temp_ui)
+                        for i, p in enumerate(current_pts):
+                            draw.ellipse([p[0]-6, p[1]-6, p[0]+6, p[1]+6], fill="red", outline="white", width=2)
+                            draw.text((p[0]+10, p[1]+10), str(i+1), fill="red")
+                        
+                        value = streamlit_image_coordinates(temp_ui, key=f"coords_{file_key}")
+                        if value:
+                            new_p = (int(value["x"]), int(value["y"]))
+                            if not current_pts or np.linalg.norm(np.array(new_p) - np.array(current_pts[-1])) > 10:
+                                st.session_state.is_correcting = True
+                                if len(current_pts) < 4:
+                                    if file_key not in st.session_state.points_map: st.session_state.points_map[file_key] = []
+                                    st.session_state.points_map[file_key].append(new_p)
+                                else:
+                                    st.session_state.points_map[file_key] = [new_p]
                                 st.rerun()
+
+                        if len(current_pts) == 4:
+                            if st.button("🚀 Re-Apply Flattening", use_container_width=True, type="primary"):
+                                with st.spinner("Processing..."):
+                                    image_cv = cv2.cvtColor(np.array(original_image), cv2.COLOR_RGB2BGR)
+                                    pts_scaled = np.array(current_pts, dtype="float32") * scale_ratio 
+                                    warped_cv = four_point_transform(image_cv, pts_scaled)
+                                    st.session_state.processed_images[f"{file_key}_warp"] = Image.fromarray(cv2.cvtColor(warped_cv, cv2.COLOR_BGR2RGB))
+                                    st.session_state.is_correcting = False
+                                    st.rerun()
+            
+            # Execute the fragment
+            manual_correction_fragment()
             
             with st.expander("🖼️ View AI Mask (Cutout)"):
                 st.image(st.session_state.processed_images[f"{file_key}_ai"], use_container_width=True)
