@@ -1,5 +1,7 @@
 streamlit
-opencv-python-headless
-numpy
 Pillow
+numpy
+opencv-python-headless
 streamlit-image-coordinates
+rembg[cpu]
+onnxruntime

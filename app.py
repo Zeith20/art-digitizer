@@ -11,118 +11,87 @@ def order_points(pts):
     s = pts.sum(axis=1)
     rect[0] = pts[np.argmin(s)]
     rect[2] = pts[np.argmax(s)]
-    
     diff = np.diff(pts, axis=1)
     rect[1] = pts[np.argmin(diff)]
     rect[3] = pts[np.argmax(diff)]
     return rect
 
 def four_point_transform(image, pts):
-    """Applies a perspective warp to flatten the image."""
+    """Applies perspective warp."""
     rect = order_points(pts)
     (tl, tr, br, bl) = rect
-
     widthA = np.sqrt(((br[0] - bl[0]) ** 2) + ((br[1] - bl[1]) ** 2))
     widthB = np.sqrt(((tr[0] - tl[0]) ** 2) + ((tr[1] - tl[1]) ** 2))
     maxWidth = max(int(widthA), int(widthB))
-
     heightA = np.sqrt(((tr[0] - br[0]) ** 2) + ((tr[1] - br[1]) ** 2))
     heightB = np.sqrt(((tl[0] - bl[0]) ** 2) + ((tl[1] - bl[1]) ** 2))
     maxHeight = max(int(heightA), int(heightB))
-
-    dst = np.array([
-        [0, 0],
-        [maxWidth - 1, 0],
-        [maxWidth - 1, maxHeight - 1],
-        [0, maxHeight - 1]], dtype="float32")
-
+    dst = np.array([[0, 0], [maxWidth - 1, 0], [maxWidth - 1, maxHeight - 1], [0, maxHeight - 1]], dtype="float32")
     M = cv2.getPerspectiveTransform(rect, dst)
-    warped = cv2.warpPerspective(image, M, (maxWidth, maxHeight))
-    return warped
+    return cv2.warpPerspective(image, M, (maxWidth, maxHeight))
 
 def auto_detect_corners(image):
-    """Smarter detection using adaptive thresholding, morphology, and convex hull."""
+    """Refined detection that ignores the image boundary."""
     img_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+    h, w = img_cv.shape[:2]
     gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
-    
-    # 1. Denoise while preserving edges
     blur = cv2.bilateralFilter(gray, 9, 75, 75)
     
-    # 2. Try multiple thresholding methods
-    # Method A: Adaptive Thresholding (good for paper/shadows)
     thresh = cv2.adaptiveThreshold(blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
-    thresh = cv2.bitwise_not(thresh) # Invert
+    thresh = cv2.bitwise_not(thresh)
     
-    # 3. Morphological closing to fill gaps in edges
     kernel = np.ones((5,5), np.uint8)
     morphed = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel, iterations=2)
     
     cnts, _ = cv2.findContours(morphed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
-    if not cnts:
-        # Method B: Fallback to Canny
-        edged = cv2.Canny(blur, 50, 150)
-        dilated = cv2.dilate(edged, kernel, iterations=1)
-        cnts, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not cnts: return None
 
-    if not cnts:
-        return None
-
-    # Get the largest contour by area
-    c = max(cnts, key=cv2.contourArea)
+    # FILTER: Remove contours that are essentially the image border
+    filtered_cnts = []
+    for c in cnts:
+        area = cv2.contourArea(c)
+        if area < (h * w * 0.95) and area > (h * w * 0.05): # Not the whole image, but significant
+            filtered_cnts.append(c)
+            
+    if not filtered_cnts: return None
     
-    # 4. Try to approximate to 4 points
+    c = max(filtered_cnts, key=cv2.contourArea)
     peri = cv2.arcLength(c, True)
     approx = cv2.approxPolyDP(c, 0.02 * peri, True)
     
     if len(approx) == 4:
         return approx.reshape(4, 2)
     
-    # 5. If it's a "custom" or noisy shape, use Convex Hull and find 4 extreme corners
-    # This is much smarter for non-squared/irregular paper
     hull = cv2.convexHull(c).reshape(-1, 2)
-    
-    # Find points that minimize/maximize sum and difference (standard corner detection)
-    s = hull.sum(axis=1)
-    diff = np.diff(hull, axis=1)
-    
-    tl = hull[np.argmin(s)]
-    br = hull[np.argmax(s)]
-    tr = hull[np.argmin(diff)]
-    bl = hull[np.argmax(diff)]
-    
-    # Basic sanity check: ensure the area isn't tiny
-    if cv2.contourArea(np.array([tl, tr, br, bl])) < (image.width * image.height * 0.05):
-        return None
-        
-    return np.array([tl, tr, br, bl])
+    s, diff = hull.sum(axis=1), np.diff(hull, axis=1)
+    return np.array([hull[np.argmin(s)], hull[np.argmin(diff)], hull[np.argmax(s)], hull[np.argmax(diff)]])
 
 # --- PAGE SETUP ---
 st.set_page_config(page_title="Art Digitizer", layout="centered")
 st.title("🎨 Art Digitizer Pipeline")
 
 # Initialize session state
-if 'points_map' not in st.session_state:
-    st.session_state.points_map = {}
-if 'current_index' not in st.session_state:
-    st.session_state.current_index = 0
+if 'points_map' not in st.session_state: st.session_state.points_map = {}
+if 'current_index' not in st.session_state: st.session_state.current_index = 0
+
+# --- UI: CONFIG ---
+mode = st.radio("Select Processing Mode:", ["Standard Paper (Warp)", "Odd Shape (AI Cutout)"], horizontal=True)
 
 # --- UI: UPLOAD ---
-uploaded_files = st.file_uploader("Upload images of the artwork", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
+uploaded_files = st.file_uploader("Upload images", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
 
 if uploaded_files:
-    # Navigation and Progress
     num_files = len(uploaded_files)
     st.session_state.current_index = min(st.session_state.current_index, num_files - 1)
     
     col_nav1, col_nav2, col_nav3 = st.columns([1, 2, 1])
     with col_nav1:
-        if st.button("⬅️ Previous") and st.session_state.current_index > 0:
+        if st.button("⬅️ Prev") and st.session_state.current_index > 0:
             st.session_state.current_index -= 1
             st.rerun()
     with col_nav2:
-        st.write(f"**Image {st.session_state.current_index + 1} of {num_files}**")
-        st.caption(f"File: {uploaded_files[st.session_state.current_index].name}")
+        st.write(f"**{st.session_state.current_index + 1} / {num_files}**")
+        st.caption(uploaded_files[st.session_state.current_index].name)
     with col_nav3:
         if st.button("Next ➡️") and st.session_state.current_index < num_files - 1:
             st.session_state.current_index += 1
@@ -130,72 +99,69 @@ if uploaded_files:
 
     current_file = uploaded_files[st.session_state.current_index]
     file_key = f"{current_file.name}_{current_file.size}"
-    
     image = Image.open(current_file)
-    MOBILE_WIDTH = 350
-    scale_ratio = image.width / MOBILE_WIDTH
-    new_height = int(image.height / scale_ratio)
-    ui_image = image.resize((MOBILE_WIDTH, new_height))
+    scale_ratio = image.width / 350
+    ui_image = image.resize((350, int(image.height / scale_ratio)))
 
-    # Auto-detection for new files in the batch
-    if file_key not in st.session_state.points_map:
-        auto_pts = auto_detect_corners(image)
-        if auto_pts is not None:
-            ordered_auto_pts = order_points(auto_pts)
-            st.session_state.points_map[file_key] = [(float(p[0] / scale_ratio), float(p[1] / scale_ratio)) for p in ordered_auto_pts]
-            st.toast(f"✅ Auto-detected corners for {current_file.name}")
-        else:
-            st.session_state.points_map[file_key] = []
-    
-    # UI for current image
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        if not st.session_state.points_map[file_key]:
-            st.warning("⚠️ **Auto-detection failed.** Please tap the 4 corners manually.")
-        else:
-            st.write("📍 **Verify or tap the 4 corners.**")
-    with col2:
-        if st.button("Reset Points"):
-            st.session_state.points_map[file_key] = []
-            st.rerun()
+    if mode == "Standard Paper (Warp)":
+        if file_key not in st.session_state.points_map:
+            auto_pts = auto_detect_corners(image)
+            if auto_pts is not None:
+                ordered_auto_pts = order_points(auto_pts)
+                st.session_state.points_map[file_key] = [(float(p[0] / scale_ratio), float(p[1] / scale_ratio)) for p in ordered_auto_pts]
+                st.toast("✅ Auto-detected paper!")
+            else:
+                st.session_state.points_map[file_key] = []
 
-    # Draw points
-    img_to_draw = ui_image.copy()
-    draw = ImageDraw.Draw(img_to_draw)
-    for p in st.session_state.points_map[file_key]:
-        x, y = p
-        r = 5
-        draw.ellipse((x-r, y-r, x+r, y+r), fill='red')
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            if not st.session_state.points_map[file_key]:
+                st.warning("⚠️ **Detection failed.** Tap 4 corners manually.")
+            else:
+                st.write("📍 **Verify the 4 corners.**")
+        with col2:
+            if st.button("Reset"):
+                st.session_state.points_map[file_key] = []
+                st.rerun()
 
-    # Interaction
-    value = streamlit_image_coordinates(img_to_draw, key=f"coords_{file_key}")
-    if value is not None:
-        point = (value["x"], value["y"])
-        if point not in st.session_state.points_map[file_key] and len(st.session_state.points_map[file_key]) < 4:
-            st.session_state.points_map[file_key].append(point)
-            st.rerun()
+        img_to_draw = ui_image.copy()
+        draw = ImageDraw.Draw(img_to_draw)
+        for p in st.session_state.points_map[file_key]:
+            x, y = p
+            draw.ellipse((x-5, y-5, x+5, y+5), fill='red')
 
-    # Processing
-    if len(st.session_state.points_map[file_key]) == 4:
-        st.success("4 corners selected!")
-        if st.button("Crop & Flatten This Image"):
-            with st.spinner('Warping geometry...'):
-                image_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-                pts = np.array(st.session_state.points_map[file_key], dtype="float32")
-                pts_scaled = pts * scale_ratio 
-                warped_cv = four_point_transform(image_cv, pts_scaled)
-                result_image = Image.fromarray(cv2.cvtColor(warped_cv, cv2.COLOR_BGR2RGB))
-                
-                st.subheader("Final Result")
-                st.image(result_image, use_container_width=True)
-                
-                buf = io.BytesIO()
-                result_image.save(buf, format="PNG")
-                st.download_button(
-                    label=f"Download {current_file.name} (Processed)",
-                    data=buf.getvalue(),
-                    file_name=f"digitized_{current_file.name}.png",
-                    mime="image/png"
-                )
+        value = streamlit_image_coordinates(img_to_draw, key=f"coords_{file_key}")
+        if value is not None:
+            point = (value["x"], value["y"])
+            if point not in st.session_state.points_map[file_key] and len(st.session_state.points_map[file_key]) < 4:
+                st.session_state.points_map[file_key].append(point)
+                st.rerun()
+
+        if len(st.session_state.points_map[file_key]) == 4:
+            if st.button("Process & Flatten"):
+                with st.spinner('Warping...'):
+                    image_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+                    pts_scaled = np.array(st.session_state.points_map[file_key], dtype="float32") * scale_ratio 
+                    result_cv = four_point_transform(image_cv, pts_scaled)
+                    result_image = Image.fromarray(cv2.cvtColor(result_cv, cv2.COLOR_BGR2RGB))
+                    st.image(result_image, use_container_width=True)
+                    buf = io.BytesIO()
+                    result_image.save(buf, format="PNG")
+                    st.download_button("Download Scan", buf.getvalue(), f"scan_{current_file.name}.png", "image/png")
+
+    else: # AI Cutout Mode
+        st.info("💡 AI will remove the background. This may take a few seconds.")
+        st.image(ui_image, use_container_width=True)
+        if st.button("Remove Background"):
+            with st.spinner('AI analyzing layers...'):
+                try:
+                    from rembg import remove
+                    result_image = remove(image)
+                    st.image(result_image, use_container_width=True)
+                    buf = io.BytesIO()
+                    result_image.save(buf, format="PNG")
+                    st.download_button("Download Cutout", buf.getvalue(), f"cutout_{current_file.name}.png", "image/png")
+                except Exception as e:
+                    st.error(f"Error: {e}")
 else:
-    st.info("Please upload one or more images to get started.")
+    st.info("Please upload images to get started.")
