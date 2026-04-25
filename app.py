@@ -45,6 +45,40 @@ def find_corners_from_mask(pill_image_with_alpha):
     s, diff = hull.sum(axis=1), np.diff(hull, axis=1)
     return np.array([hull[np.argmin(s)], hull[np.argmin(diff)], hull[np.argmax(s)], hull[np.argmax(diff)]])
 
+def render_manual_ui(file_key, ui_image, original_image, scale_ratio):
+    """Renders the interactive image and processing button for manual selection."""
+    col_m1, col_m2 = st.columns([3, 1])
+    with col_m1:
+        st.write("📍 **Tap 4 corners** to manually adjust:")
+    with col_m2:
+        if st.button("Reset", key=f"reset_{file_key}"):
+            st.session_state.points_map[file_key] = []
+            st.rerun()
+
+    img_to_draw = ui_image.copy()
+    if file_key in st.session_state.points_map:
+        draw = ImageDraw.Draw(img_to_draw)
+        for p in st.session_state.points_map[file_key]:
+            x, y = p
+            draw.ellipse((x-5, y-5, x+5, y+5), fill='red')
+
+    # Use a specific key for the coord component to avoid state loss
+    value = streamlit_image_coordinates(img_to_draw, key=f"coords_{file_key}")
+    if value is not None:
+        point = (value["x"], value["y"])
+        if file_key not in st.session_state.points_map: st.session_state.points_map[file_key] = []
+        if point not in st.session_state.points_map[file_key] and len(st.session_state.points_map[file_key]) < 4:
+            st.session_state.points_map[file_key].append(point)
+            st.rerun()
+
+    if file_key in st.session_state.points_map and len(st.session_state.points_map[file_key]) == 4:
+        if st.button("🚀 Apply Manual Warp", use_container_width=True, key=f"apply_{file_key}"):
+            image_cv = cv2.cvtColor(np.array(original_image), cv2.COLOR_RGB2BGR)
+            pts_scaled = np.array(st.session_state.points_map[file_key], dtype="float32") * scale_ratio 
+            warped_cv = four_point_transform(image_cv, pts_scaled)
+            st.session_state.processed_images[f"{file_key}_warp"] = Image.fromarray(cv2.cvtColor(warped_cv, cv2.COLOR_BGR2RGB))
+            st.rerun()
+
 # --- PAGE SETUP ---
 st.set_page_config(page_title="Art Digitizer", layout="centered")
 st.title("🎨 Smart Art Digitizer")
@@ -84,6 +118,7 @@ if uploaded_files:
     scale_ratio = original_image.width / 350
     ui_image = original_image.resize((350, int(original_image.height / scale_ratio)))
 
+    # --- ACTION BUTTON ---
     if st.button("🌟 Start Smart Digitization (AI + Warp)", use_container_width=True):
         with st.spinner('AI analyzing layers...'):
             from rembg import remove
@@ -98,59 +133,38 @@ if uploaded_files:
                 st.session_state.processed_images[f"{file_key}_warp"] = Image.fromarray(cv2.cvtColor(warped_cv, cv2.COLOR_BGR2RGB))
                 st.toast("✅ Smart scan complete!")
             else:
-                st.warning("Could not auto-detect corners. Try manual selection.")
+                st.warning("Could not auto-detect corners. Adjust manually below.")
 
-    # --- UI: DISPLAY & MANUAL ---
+    # --- UI: DISPLAY RESULTS ---
     if f"{file_key}_warp" in st.session_state.processed_images:
         st.subheader("Result")
         st.image(st.session_state.processed_images[f"{file_key}_warp"], use_container_width=True)
         buf = io.BytesIO()
         st.session_state.processed_images[f"{file_key}_warp"].save(buf, format="PNG")
         st.download_button("💾 Download Result", buf.getvalue(), f"digitized_{current_file.name}.png", "image/png")
-        if st.button("Clear and Restart"):
+        
+        with st.expander("🛠️ Manually adjust corners"):
+            render_manual_ui(file_key, ui_image, original_image, scale_ratio)
+            
+        if st.button("🗑️ Clear and Restart"):
             if f"{file_key}_warp" in st.session_state.processed_images: del st.session_state.processed_images[f"{file_key}_warp"]
             if f"{file_key}_ai" in st.session_state.processed_images: del st.session_state.processed_images[f"{file_key}_ai"]
             st.session_state.points_map[file_key] = []
             st.rerun()
 
-    else:
-        col_m1, col_m2 = st.columns([3, 1])
-        with col_m1:
-            st.write("📍 **Tap 4 corners** for manual warp:")
-        with col_m2:
-            if st.button("Reset"):
-                st.session_state.points_map[file_key] = []
-                st.rerun()
-
-        img_to_draw = ui_image.copy()
-        if file_key in st.session_state.points_map:
-            draw = ImageDraw.Draw(img_to_draw)
-            for p in st.session_state.points_map[file_key]:
-                x, y = p
-                draw.ellipse((x-5, y-5, x+5, y+5), fill='red')
-
-        value = streamlit_image_coordinates(img_to_draw, key=f"coords_{file_key}")
-        if value is not None:
-            point = (value["x"], value["y"])
-            if file_key not in st.session_state.points_map: st.session_state.points_map[file_key] = []
-            if point not in st.session_state.points_map[file_key] and len(st.session_state.points_map[file_key]) < 4:
-                st.session_state.points_map[file_key].append(point)
-                st.rerun()
-
-        if file_key in st.session_state.points_map and len(st.session_state.points_map[file_key]) == 4:
-            if st.button("🚀 Process Manual Selection", use_container_width=True):
-                image_cv = cv2.cvtColor(np.array(original_image), cv2.COLOR_RGB2BGR)
-                pts_scaled = np.array(st.session_state.points_map[file_key], dtype="float32") * scale_ratio 
-                warped_cv = four_point_transform(image_cv, pts_scaled)
-                st.session_state.processed_images[f"{file_key}_warp"] = Image.fromarray(cv2.cvtColor(warped_cv, cv2.COLOR_BGR2RGB))
-                st.rerun()
-
-    if f"{file_key}_ai" in st.session_state.processed_images and f"{file_key}_warp" not in st.session_state.processed_images:
-        st.divider()
-        st.subheader("AI Cutout (No Warp)")
+    elif f"{file_key}_ai" in st.session_state.processed_images:
+        st.subheader("AI Cutout")
         st.image(st.session_state.processed_images[f"{file_key}_ai"], use_container_width=True)
         buf = io.BytesIO()
         st.session_state.processed_images[f"{file_key}_ai"].save(buf, format="PNG")
         st.download_button("💾 Download Cutout", buf.getvalue(), f"cutout_{current_file.name}.png", "image/png")
+        
+        with st.expander("🛠️ Try perspective warp manually"):
+            render_manual_ui(file_key, ui_image, original_image, scale_ratio)
+
+    else:
+        # If no result exists yet, show the manual UI by default
+        render_manual_ui(file_key, ui_image, original_image, scale_ratio)
+
 else:
     st.info("Please upload images to get started.")
