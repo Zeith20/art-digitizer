@@ -40,6 +40,31 @@ def four_point_transform(image, pts):
     warped = cv2.warpPerspective(image, M, (maxWidth, maxHeight))
     return warped
 
+def auto_detect_corners(image):
+    """Attempts to automatically find the 4 corners of the artwork."""
+    # Convert to grayscale and blur
+    img_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+    gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
+    blur = cv2.GaussianBlur(gray, (5, 5), 0)
+    
+    # Edge detection
+    edged = cv2.Canny(blur, 75, 200)
+    
+    # Find contours
+    cnts, _ = cv2.findContours(edged.copy(), cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    cnts = sorted(cnts, key=cv2.contourArea, reverse=True)[:5]
+    
+    for c in cnts:
+        # Approximate the contour
+        peri = cv2.arcLength(c, True)
+        approx = cv2.approxPolyDP(c, 0.02 * peri, True)
+        
+        # If our approximated contour has four points, we can assume we've found our screen
+        if len(approx) == 4:
+            return approx.reshape(4, 2)
+            
+    return None
+
 # --- PAGE SETUP ---
 st.set_page_config(page_title="Art Digitizer", layout="centered")
 st.title("🎨 Art Digitizer Pipeline")
@@ -60,6 +85,20 @@ if uploaded_file is not None:
     if st.session_state.current_file != uploaded_file.name:
         st.session_state.current_file = uploaded_file.name
         st.session_state.points = []
+        
+        # --- AUTO DETECTION ---
+        image = Image.open(uploaded_file)
+        # --- SCALING FOR MOBILE UI ---
+        MOBILE_WIDTH = 350
+        scale_ratio = image.width / MOBILE_WIDTH
+        
+        auto_pts = auto_detect_corners(image)
+        if auto_pts is not None:
+            # Order them and scale down to UI coordinates
+            ordered_auto_pts = order_points(auto_pts)
+            st.session_state.points = [(float(p[0] / scale_ratio), float(p[1] / scale_ratio)) for p in ordered_auto_pts]
+            st.toast("✅ Auto-detected corners!")
+        
         st.rerun()
 
     image = Image.open(uploaded_file)
