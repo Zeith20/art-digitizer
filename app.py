@@ -47,42 +47,56 @@ st.title("🎨 Art Digitizer Pipeline")
 # Initialize memory to store screen taps
 if 'points' not in st.session_state:
     st.session_state.points = []
+# Initialize memory to track file changes so we can reset taps for new photos
+if 'current_file' not in st.session_state:
+    st.session_state.current_file = None
 
 # --- UI: UPLOAD ---
 uploaded_file = st.file_uploader("Upload an image of the artwork", type=["jpg", "jpeg", "png"])
 
 if uploaded_file is not None:
+    
+    # Reset points if a new file is uploaded
+    if st.session_state.current_file != uploaded_file.name:
+        st.session_state.current_file = uploaded_file.name
+        st.session_state.points = []
+        st.rerun()
+
     image = Image.open(uploaded_file)
     
-    # Add a reset button to clear taps
+    # --- SCALING FOR MOBILE UI ---
+    MOBILE_WIDTH = 350
+    scale_ratio = image.width / MOBILE_WIDTH
+    new_height = int(image.height / scale_ratio)
+    ui_image = image.resize((MOBILE_WIDTH, new_height))
+    
     col1, col2 = st.columns([3, 1])
     with col1:
         st.write("📍 **Tap the 4 corners of the drawing.**")
     with col2:
-        if st.button("Reset Taps"):
+        if st.button("Reset"):
             st.session_state.points = []
             st.rerun()
 
-    # Draw red dots where the user taps for visual feedback
-    img_to_draw = image.copy()
+    # Draw red dots on the small UI image
+    img_to_draw = ui_image.copy()
     draw = ImageDraw.Draw(img_to_draw)
     for p in st.session_state.points:
         x, y = p
-        r = min(image.size) * 0.02 # Responsive dot size
+        r = 5 # Fixed dot size for visibility on small screen
         draw.ellipse((x-r, y-r, x+r, y+r), fill='red')
 
-    # Display the interactive image (removed the breaking width parameter here)
+    # Display the interactive image (now sized to fit your phone)
     value = streamlit_image_coordinates(img_to_draw, key="coords")
 
     # Capture the tap coordinates
     if value is not None:
         point = (value["x"], value["y"])
-        # Only add point if it's new and we have less than 4
         if point not in st.session_state.points and len(st.session_state.points) < 4:
             st.session_state.points.append(point)
             st.rerun()
 
-    # Once 4 corners are tapped, reveal the processing button
+    # Once 4 corners are tapped, process using original resolution
     if len(st.session_state.points) == 4:
         st.success("4 corners selected! Ready to process.")
         
@@ -90,15 +104,17 @@ if uploaded_file is not None:
             with st.spinner('Warping geometry...'):
                 
                 image_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-                pts = np.array(st.session_state.points, dtype="float32")
                 
-                # Apply the warp based on your exact taps
-                warped_cv = four_point_transform(image_cv, pts)
+                # Scale the UI tap coordinates back up to the original high-res image
+                pts = np.array(st.session_state.points, dtype="float32")
+                pts_scaled = pts * scale_ratio 
+                
+                # Apply the warp
+                warped_cv = four_point_transform(image_cv, pts_scaled)
                 
                 result_image = Image.fromarray(cv2.cvtColor(warped_cv, cv2.COLOR_BGR2RGB))
                 
                 st.subheader("Final Result")
-                # Kept width='stretch' here because st.image supports it natively
                 st.image(result_image, width='stretch')
                 
                 buf = io.BytesIO()
