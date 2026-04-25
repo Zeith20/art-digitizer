@@ -5,27 +5,35 @@ import cv2
 import io
 import traceback
 
+# --- PAGE SETUP ---
+st.set_page_config(page_title="Art Digitizer", layout="centered")
+st.title("🎨 Smart Art Digitizer")
+
 # --- OPTIONAL DEPENDENCIES ---
+# We check these after set_page_config
+IMAGE_COORDS_ERROR = None
 try:
     from streamlit_image_coordinates import streamlit_image_coordinates
     IMAGE_COORDS_AVAILABLE = True
 except Exception as e:
     IMAGE_COORDS_AVAILABLE = False
-    st.sidebar.error(f"Error loading image-coordinates: {e}")
+    IMAGE_COORDS_ERROR = str(e)
 
+CANVAS_ERROR = None
 try:
     from streamlit_drawable_canvas import st_canvas
     CANVAS_AVAILABLE = True
 except Exception as e:
     CANVAS_AVAILABLE = False
-    st.sidebar.error(f"Error loading canvas: {e}")
+    CANVAS_ERROR = str(e)
 
+REMBG_ERROR = None
 try:
     from rembg import remove as rembg_remove
     REMBG_AVAILABLE = True
 except Exception as e:
     REMBG_AVAILABLE = False
-    st.sidebar.warning(f"AI removal unavailable: {e}")
+    REMBG_ERROR = str(e)
 
 # --- UTILS ---
 def order_points(pts):
@@ -65,14 +73,20 @@ def find_corners_from_mask(pill_image_with_alpha):
     s, diff = hull.sum(axis=1), np.diff(hull, axis=1)
     return np.array([hull[np.argmin(s)], hull[np.argmin(diff)], hull[np.argmax(s)], hull[np.argmax(diff)]])
 
-# --- PAGE SETUP ---
-st.set_page_config(page_title="Art Digitizer", layout="centered")
-st.title("🎨 Smart Art Digitizer")
-
 # Session State Initialization
 if 'points_map' not in st.session_state: st.session_state.points_map = {}
 if 'current_index' not in st.session_state: st.session_state.current_index = 0
 if 'processed_images' not in st.session_state: st.session_state.processed_images = {}
+
+# Debug Sidebar
+with st.sidebar:
+    st.header("Debug Info")
+    st.write(f"Canvas: {'✅' if CANVAS_AVAILABLE else '❌'}")
+    if CANVAS_ERROR: st.error(f"Canvas Error: {CANVAS_ERROR}")
+    st.write(f"Coords: {'✅' if IMAGE_COORDS_AVAILABLE else '❌'}")
+    if IMAGE_COORDS_ERROR: st.error(f"Coords Error: {IMAGE_COORDS_ERROR}")
+    st.write(f"AI: {'✅' if REMBG_AVAILABLE else '❌'}")
+    if REMBG_ERROR: st.warning(f"AI Warning: {REMBG_ERROR}")
 
 try:
     uploaded_files = st.file_uploader("Upload drawings", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
@@ -125,7 +139,7 @@ try:
                         st.toast("✅ Auto-detected and flattened!")
                     st.rerun()
         else:
-            st.info("AI Auto-Scan unavailable (rembg not installed).")
+            st.info("AI Auto-Scan unavailable.")
 
         # --- MANUAL INTERFACE ---
         st.divider()
@@ -141,6 +155,8 @@ try:
 
         current_pts = st.session_state.points_map.get(file_key, [])
         
+        interface_shown = False
+
         if CANVAS_AVAILABLE:
             try:
                 # Interactive Canvas
@@ -176,13 +192,14 @@ try:
                         st.session_state.points_map[file_key] = new_pts
                         if (len(current_pts) < 4 and len(new_pts) >= 4) or (len(current_pts) >= 4 and len(new_pts) < 4):
                             st.rerun()
-            except Exception:
-                # If st_canvas fails at runtime (e.g. image_to_url error), fall back
+                interface_shown = True
+            except Exception as e:
+                st.sidebar.error(f"Canvas runtime error: {e}")
                 CANVAS_AVAILABLE = False
 
-        if not CANVAS_AVAILABLE and IMAGE_COORDS_AVAILABLE:
+        if not interface_shown and IMAGE_COORDS_AVAILABLE:
             # Fallback Click interface
-            st.info("Using click-to-select (Canvas library not found). Click 4 corners in order.")
+            st.info("Using click-to-select interface.")
             temp_ui = ui_image.copy()
             draw = ImageDraw.Draw(temp_ui)
             for i, p in enumerate(current_pts):
@@ -192,23 +209,16 @@ try:
             value = streamlit_image_coordinates(temp_ui, key=f"coords_{file_key}")
             if value:
                 new_p = (float(value["x"]), float(value["y"]))
-                # Prevent duplicate clicks (within 5 pixels)
                 if not current_pts or np.linalg.norm(np.array(new_p) - np.array(current_pts[-1])) > 5:
                     if len(current_pts) < 4:
                         if file_key not in st.session_state.points_map:
                             st.session_state.points_map[file_key] = []
                         st.session_state.points_map[file_key].append(new_p)
                         st.rerun()
-        else:
-            st.error("No interactive interface available. Please install 'streamlit-drawable-canvas' or 'streamlit-image-coordinates'.")
-            # Manual sliders as last resort
-            st.write("Manual Coordinate Entry:")
-            cols = st.columns(2)
-            for i in range(4):
-                with cols[i % 2]:
-                    px = st.number_input(f"P{i+1} X", 0, width, value=int(current_pts[i][0]*scale_ratio) if i < len(current_pts) else 0)
-                    py = st.number_input(f"P{i+1} Y", 0, height, value=int(current_pts[i][1]*scale_ratio) if i < len(current_pts) else 0)
-                    # This would need more logic to sync back, but it's a desperate fallback
+            interface_shown = True
+
+        if not interface_shown:
+            st.error("No interactive interface could be loaded. Please check the sidebar for details.")
 
         # Warp Execution
         if len(st.session_state.points_map.get(file_key, [])) == 4:
