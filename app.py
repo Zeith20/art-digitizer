@@ -98,6 +98,8 @@ if uploaded_file is not None:
             ordered_auto_pts = order_points(auto_pts)
             st.session_state.points = [(float(p[0] / scale_ratio), float(p[1] / scale_ratio)) for p in ordered_auto_pts]
             st.toast("✅ Auto-detected corners!")
+        else:
+            st.toast("⚠️ Auto-detection failed. Please tap the corners manually.")
         
         st.rerun()
 
