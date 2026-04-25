@@ -123,7 +123,7 @@ try:
 
         # --- AUTO SCAN ---
         if REMBG_AVAILABLE:
-            if st.button("🌟 Start AI Auto-Scan", width='stretch'):
+            if st.button("🌟 Start AI Auto-Scan", use_container_width=True):
                 with st.spinner('AI analyzing layers...'):
                     cleansed = rembg_remove(original_image)
                     st.session_state.processed_images[f"{file_key}_ai"] = cleansed
@@ -220,7 +220,7 @@ try:
 
         if not interface_shown:
             st.warning("⚠️ Interactive interface failed to load. Using manual sliders fallback.")
-            st.image(ui_image, width='stretch')
+            st.image(ui_image, use_container_width=True)
             
             # Manual coordinate entry fallback
             st.subheader("Manual Corner Entry")
@@ -235,7 +235,7 @@ try:
                     y = st.slider(f"P{i+1} Y (Vertical)", 0, ui_image.height, default_y, key=f"sl_y_{file_key}_{i}")
                     new_pts.append((float(x), float(y)))
             
-            if st.button("Apply Manual Points", width='stretch'):
+            if st.button("Apply Manual Points", use_container_width=True):
                 st.session_state.points_map[file_key] = new_pts
                 st.toast("Points updated manually!")
                 st.rerun()
@@ -246,7 +246,7 @@ try:
 
         # Warp Execution
         if len(st.session_state.points_map.get(file_key, [])) == 4:
-            if st.button("🚀 Finalize & Flatten Artwork", width='stretch', type="primary"):
+            if st.button("🚀 Finalize & Flatten Artwork", use_container_width=True, type="primary"):
                 with st.spinner("Applying geometry warp..."):
                     image_cv = cv2.cvtColor(np.array(original_image), cv2.COLOR_RGB2BGR)
                     pts_scaled = np.array(st.session_state.points_map[file_key], dtype="float32") * scale_ratio 
@@ -257,14 +257,14 @@ try:
         # --- DISPLAY RESULTS ---
         if f"{file_key}_warp" in st.session_state.processed_images:
             st.subheader("Final Result")
-            st.image(st.session_state.processed_images[f"{file_key}_warp"], width='stretch')
+            st.image(st.session_state.processed_images[f"{file_key}_warp"], use_container_width=True)
             buf = io.BytesIO()
             st.session_state.processed_images[f"{file_key}_warp"].save(buf, format="PNG")
             st.download_button("💾 Download Digitized Scan", buf.getvalue(), f"scan_{current_file.name}.png", "image/png")
 
         if f"{file_key}_ai" in st.session_state.processed_images:
             with st.expander("View AI Background Removal (Cutout)"):
-                st.image(st.session_state.processed_images[f"{file_key}_ai"], width='stretch')
+                st.image(st.session_state.processed_images[f"{file_key}_ai"], use_container_width=True)
     else:
         st.info("Upload images to begin.")
 
