@@ -41,21 +41,61 @@ def four_point_transform(image, pts):
     return warped
 
 def auto_detect_corners(image):
-    """Attempts to automatically find the 4 corners of the artwork."""
+    """Smarter detection using adaptive thresholding, morphology, and convex hull."""
     img_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
     gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
-    blur = cv2.GaussianBlur(gray, (5, 5), 0)
-    edged = cv2.Canny(blur, 75, 200)
     
-    cnts, _ = cv2.findContours(edged.copy(), cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
-    cnts = sorted(cnts, key=cv2.contourArea, reverse=True)[:5]
+    # 1. Denoise while preserving edges
+    blur = cv2.bilateralFilter(gray, 9, 75, 75)
     
-    for c in cnts:
-        peri = cv2.arcLength(c, True)
-        approx = cv2.approxPolyDP(c, 0.02 * peri, True)
-        if len(approx) == 4:
-            return approx.reshape(4, 2)
-    return None
+    # 2. Try multiple thresholding methods
+    # Method A: Adaptive Thresholding (good for paper/shadows)
+    thresh = cv2.adaptiveThreshold(blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
+    thresh = cv2.bitwise_not(thresh) # Invert
+    
+    # 3. Morphological closing to fill gaps in edges
+    kernel = np.ones((5,5), np.uint8)
+    morphed = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel, iterations=2)
+    
+    cnts, _ = cv2.findContours(morphed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    if not cnts:
+        # Method B: Fallback to Canny
+        edged = cv2.Canny(blur, 50, 150)
+        dilated = cv2.dilate(edged, kernel, iterations=1)
+        cnts, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    if not cnts:
+        return None
+
+    # Get the largest contour by area
+    c = max(cnts, key=cv2.contourArea)
+    
+    # 4. Try to approximate to 4 points
+    peri = cv2.arcLength(c, True)
+    approx = cv2.approxPolyDP(c, 0.02 * peri, True)
+    
+    if len(approx) == 4:
+        return approx.reshape(4, 2)
+    
+    # 5. If it's a "custom" or noisy shape, use Convex Hull and find 4 extreme corners
+    # This is much smarter for non-squared/irregular paper
+    hull = cv2.convexHull(c).reshape(-1, 2)
+    
+    # Find points that minimize/maximize sum and difference (standard corner detection)
+    s = hull.sum(axis=1)
+    diff = np.diff(hull, axis=1)
+    
+    tl = hull[np.argmin(s)]
+    br = hull[np.argmax(s)]
+    tr = hull[np.argmin(diff)]
+    bl = hull[np.argmax(diff)]
+    
+    # Basic sanity check: ensure the area isn't tiny
+    if cv2.contourArea(np.array([tl, tr, br, bl])) < (image.width * image.height * 0.05):
+        return None
+        
+    return np.array([tl, tr, br, bl])
 
 # --- PAGE SETUP ---
 st.set_page_config(page_title="Art Digitizer", layout="centered")
