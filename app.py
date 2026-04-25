@@ -5,6 +5,7 @@ import cv2
 import io
 import traceback
 from streamlit_image_coordinates import streamlit_image_coordinates
+from streamlit_drawable_canvas import st_canvas
 
 # --- CACHING & MODELS ---
 @st.cache_resource
@@ -99,37 +100,69 @@ try:
                 st.session_state.processed_images[f"{file_key}_ai"] = cleansed
                 pts = find_corners_from_mask(cleansed)
                 if pts is not None:
-                    st.session_state.points_map[file_key] = [(float(p[0] / scale_ratio), float(p[1] / scale_ratio)) for p in order_points(pts)]
-                    st.toast("✅ Auto-detected corners!")
+                    pts_ordered = order_points(pts)
+                    # Store scaled for UI
+                    st.session_state.points_map[file_key] = [(float(p[0] / scale_ratio), float(p[1] / scale_ratio)) for p in pts_ordered]
+                    st.session_state[f"canvas_key_{file_key}"] = st.session_state.get(f"canvas_key_{file_key}", 0) + 1
+                    
+                    # Automatic Warp
+                    image_cv = cv2.cvtColor(np.array(original_image), cv2.COLOR_RGB2BGR)
+                    warped_cv = four_point_transform(image_cv, pts_ordered)
+                    st.session_state.processed_images[f"{file_key}_warp"] = Image.fromarray(cv2.cvtColor(warped_cv, cv2.COLOR_BGR2RGB))
+                    st.toast("✅ Auto-detected and flattened!")
                 st.rerun()
 
         # --- MANUAL INTERFACE ---
         st.divider()
         col_h1, col_h2 = st.columns([3, 1])
         with col_h1:
-            st.write("📍 **Tap 4 corners manually**:")
+            st.write("📍 **Tap 4 corners (or drag to adjust)**:")
         with col_h2:
             if st.button("Reset"):
                 st.session_state.points_map[file_key] = []
+                st.session_state[f"canvas_key_{file_key}"] = st.session_state.get(f"canvas_key_{file_key}", 0) + 1
                 if f"{file_key}_warp" in st.session_state.processed_images: del st.session_state.processed_images[f"{file_key}_warp"]
                 st.rerun()
 
-        # Display and Interaction
-        img_display = ui_image.copy()
+        canvas_key = st.session_state.get(f"canvas_key_{file_key}", 0)
         current_pts = st.session_state.points_map.get(file_key, [])
-        if current_pts:
-            draw = ImageDraw.Draw(img_display)
-            for p in current_pts:
-                x, y = p
-                draw.ellipse((x-6, y-6, x+6, y+6), fill='red', outline='white', width=2)
-
-        value = streamlit_image_coordinates(img_display, key=f"v5_{file_key}")
         
-        if value:
-            new_pt = (value["x"], value["y"])
-            if new_pt not in current_pts and len(current_pts) < 4:
-                st.session_state.points_map[file_key].append(new_pt)
-                st.rerun()
+        # Pre-fill canvas with existing points
+        initial_drawing = {"version": "4.4.0", "objects": []}
+        for p in current_pts:
+            initial_drawing["objects"].append({
+                "type": "circle",
+                "left": p[0] - 5, "top": p[1] - 5,
+                "radius": 5, "fill": "red", "stroke": "white", "strokeWidth": 2,
+                "selectable": True, "hasControls": False,
+            })
+
+        canvas_result = st_canvas(
+            fill_color="rgba(255, 0, 0, 0.3)",
+            stroke_width=2,
+            stroke_color="white",
+            background_image=ui_image,
+            update_streamlit=True,
+            height=ui_image.height,
+            width=ui_image.width,
+            drawing_mode="point" if len(current_pts) < 4 else "transform",
+            point_display_radius=5,
+            initial_drawing=initial_drawing if current_pts else None,
+            key=f"canvas_{file_key}_{canvas_key}",
+        )
+
+        if canvas_result.json_data is not None:
+            new_pts = []
+            for obj in canvas_result.json_data["objects"]:
+                if obj["type"] == "circle":
+                    new_pts.append((float(obj["left"] + 5), float(obj["top"] + 5)))
+            
+            if new_pts != current_pts:
+                old_mode = "point" if len(current_pts) < 4 else "transform"
+                new_mode = "point" if len(new_pts) < 4 else "transform"
+                st.session_state.points_map[file_key] = new_pts
+                if old_mode != new_mode:
+                    st.rerun()
 
         # Warp Execution
         if len(st.session_state.points_map.get(file_key, [])) == 4:
