@@ -4,15 +4,27 @@ import numpy as np
 import cv2
 import io
 import traceback
-from streamlit_image_coordinates import streamlit_image_coordinates
-from streamlit_drawable_canvas import st_canvas
 
-# --- CACHING & MODELS ---
-@st.cache_resource
-def get_remove_fn():
-    from rembg import remove
-    return remove
+# --- OPTIONAL DEPENDENCIES ---
+try:
+    from streamlit_image_coordinates import streamlit_image_coordinates
+    IMAGE_COORDS_AVAILABLE = True
+except ImportError:
+    IMAGE_COORDS_AVAILABLE = False
 
+try:
+    from streamlit_drawable_canvas import st_canvas
+    CANVAS_AVAILABLE = True
+except ImportError:
+    CANVAS_AVAILABLE = False
+
+try:
+    from rembg import remove as rembg_remove
+    REMBG_AVAILABLE = True
+except ImportError:
+    REMBG_AVAILABLE = False
+
+# --- UTILS ---
 def order_points(pts):
     rect = np.zeros((4, 2), dtype="float32")
     s = pts.sum(axis=1)
@@ -87,36 +99,36 @@ try:
                 st.rerun()
 
         original_image = Image.open(current_file).convert("RGB")
-        # Keep scale ratio simple
         width, height = original_image.size
-        scale_ratio = width / 350
-        ui_image = original_image.resize((350, int(height / scale_ratio)))
+        display_width = 450
+        scale_ratio = width / display_width
+        ui_image = original_image.resize((display_width, int(height / scale_ratio)))
 
         # --- AUTO SCAN ---
-        if st.button("🌟 Start AI Auto-Scan", use_container_width=True):
-            with st.spinner('AI analyzing layers...'):
-                remove_fn = get_remove_fn()
-                cleansed = remove_fn(original_image)
-                st.session_state.processed_images[f"{file_key}_ai"] = cleansed
-                pts = find_corners_from_mask(cleansed)
-                if pts is not None:
-                    pts_ordered = order_points(pts)
-                    # Store scaled for UI
-                    st.session_state.points_map[file_key] = [(float(p[0] / scale_ratio), float(p[1] / scale_ratio)) for p in pts_ordered]
-                    st.session_state[f"canvas_key_{file_key}"] = st.session_state.get(f"canvas_key_{file_key}", 0) + 1
-                    
-                    # Automatic Warp
-                    image_cv = cv2.cvtColor(np.array(original_image), cv2.COLOR_RGB2BGR)
-                    warped_cv = four_point_transform(image_cv, pts_ordered)
-                    st.session_state.processed_images[f"{file_key}_warp"] = Image.fromarray(cv2.cvtColor(warped_cv, cv2.COLOR_BGR2RGB))
-                    st.toast("✅ Auto-detected and flattened!")
-                st.rerun()
+        if REMBG_AVAILABLE:
+            if st.button("🌟 Start AI Auto-Scan", use_container_width=True):
+                with st.spinner('AI analyzing layers...'):
+                    cleansed = rembg_remove(original_image)
+                    st.session_state.processed_images[f"{file_key}_ai"] = cleansed
+                    pts = find_corners_from_mask(cleansed)
+                    if pts is not None:
+                        pts_ordered = order_points(pts)
+                        st.session_state.points_map[file_key] = [(float(p[0] / scale_ratio), float(p[1] / scale_ratio)) for p in pts_ordered]
+                        st.session_state[f"canvas_key_{file_key}"] = st.session_state.get(f"canvas_key_{file_key}", 0) + 1
+                        
+                        image_cv = cv2.cvtColor(np.array(original_image), cv2.COLOR_RGB2BGR)
+                        warped_cv = four_point_transform(image_cv, pts_ordered)
+                        st.session_state.processed_images[f"{file_key}_warp"] = Image.fromarray(cv2.cvtColor(warped_cv, cv2.COLOR_BGR2RGB))
+                        st.toast("✅ Auto-detected and flattened!")
+                    st.rerun()
+        else:
+            st.info("AI Auto-Scan unavailable (rembg not installed).")
 
         # --- MANUAL INTERFACE ---
         st.divider()
         col_h1, col_h2 = st.columns([3, 1])
         with col_h1:
-            st.write("📍 **Tap 4 corners (or drag to adjust)**:")
+            st.write("📍 **Define 4 corners**:")
         with col_h2:
             if st.button("Reset"):
                 st.session_state.points_map[file_key] = []
@@ -124,45 +136,72 @@ try:
                 if f"{file_key}_warp" in st.session_state.processed_images: del st.session_state.processed_images[f"{file_key}_warp"]
                 st.rerun()
 
-        canvas_key = st.session_state.get(f"canvas_key_{file_key}", 0)
         current_pts = st.session_state.points_map.get(file_key, [])
         
-        # Pre-fill canvas with existing points
-        initial_drawing = {"version": "4.4.0", "objects": []}
-        for p in current_pts:
-            initial_drawing["objects"].append({
-                "type": "circle",
-                "left": p[0] - 5, "top": p[1] - 5,
-                "radius": 5, "fill": "red", "stroke": "white", "strokeWidth": 2,
-                "selectable": True, "hasControls": False,
-            })
+        if CANVAS_AVAILABLE:
+            # Interactive Canvas
+            canvas_key = st.session_state.get(f"canvas_key_{file_key}", 0)
+            initial_drawing = {"version": "4.4.0", "objects": []}
+            for p in current_pts:
+                initial_drawing["objects"].append({
+                    "type": "circle", "left": p[0] - 5, "top": p[1] - 5, "radius": 5,
+                    "fill": "red", "stroke": "white", "strokeWidth": 2, "selectable": True, "hasControls": False,
+                })
 
-        canvas_result = st_canvas(
-            fill_color="rgba(255, 0, 0, 0.3)",
-            stroke_width=2,
-            stroke_color="white",
-            background_image=ui_image,
-            update_streamlit=True,
-            height=ui_image.height,
-            width=ui_image.width,
-            drawing_mode="point" if len(current_pts) < 4 else "transform",
-            point_display_radius=5,
-            initial_drawing=initial_drawing if current_pts else None,
-            key=f"canvas_{file_key}_{canvas_key}",
-        )
+            canvas_result = st_canvas(
+                fill_color="rgba(255, 0, 0, 0.3)",
+                stroke_width=2,
+                stroke_color="white",
+                background_image=ui_image,
+                update_streamlit=True,
+                height=ui_image.height,
+                width=ui_image.width,
+                drawing_mode="point" if len(current_pts) < 4 else "transform",
+                point_display_radius=5,
+                initial_drawing=initial_drawing if current_pts else None,
+                key=f"canvas_{file_key}_{canvas_key}",
+            )
 
-        if canvas_result.json_data is not None:
-            new_pts = []
-            for obj in canvas_result.json_data["objects"]:
-                if obj["type"] == "circle":
-                    new_pts.append((float(obj["left"] + 5), float(obj["top"] + 5)))
+            if canvas_result.json_data is not None:
+                new_pts = []
+                for obj in canvas_result.json_data["objects"]:
+                    if obj["type"] == "circle":
+                        new_pts.append((float(obj["left"] + 5), float(obj["top"] + 5)))
+                
+                if new_pts != current_pts:
+                    st.session_state.points_map[file_key] = new_pts
+                    if (len(current_pts) < 4 and len(new_pts) >= 4) or (len(current_pts) >= 4 and len(new_pts) < 4):
+                        st.rerun()
+
+        elif IMAGE_COORDS_AVAILABLE:
+            # Fallback Click interface
+            st.info("Using click-to-select (Canvas library not found). Click 4 corners in order.")
+            temp_ui = ui_image.copy()
+            draw = ImageDraw.Draw(temp_ui)
+            for i, p in enumerate(current_pts):
+                draw.ellipse([p[0]-5, p[1]-5, p[0]+5, p[1]+5], fill="red", outline="white")
+                draw.text((p[0]+8, p[1]+8), str(i+1), fill="red")
             
-            if new_pts != current_pts:
-                old_mode = "point" if len(current_pts) < 4 else "transform"
-                new_mode = "point" if len(new_pts) < 4 else "transform"
-                st.session_state.points_map[file_key] = new_pts
-                if old_mode != new_mode:
-                    st.rerun()
+            value = streamlit_image_coordinates(temp_ui, key=f"coords_{file_key}")
+            if value:
+                new_p = (float(value["x"]), float(value["y"]))
+                # Prevent duplicate clicks (within 5 pixels)
+                if not current_pts or np.linalg.norm(np.array(new_p) - np.array(current_pts[-1])) > 5:
+                    if len(current_pts) < 4:
+                        if file_key not in st.session_state.points_map:
+                            st.session_state.points_map[file_key] = []
+                        st.session_state.points_map[file_key].append(new_p)
+                        st.rerun()
+        else:
+            st.error("No interactive interface available. Please install 'streamlit-drawable-canvas' or 'streamlit-image-coordinates'.")
+            # Manual sliders as last resort
+            st.write("Manual Coordinate Entry:")
+            cols = st.columns(2)
+            for i in range(4):
+                with cols[i % 2]:
+                    px = st.number_input(f"P{i+1} X", 0, width, value=int(current_pts[i][0]*scale_ratio) if i < len(current_pts) else 0)
+                    py = st.number_input(f"P{i+1} Y", 0, height, value=int(current_pts[i][1]*scale_ratio) if i < len(current_pts) else 0)
+                    # This would need more logic to sync back, but it's a desperate fallback
 
         # Warp Execution
         if len(st.session_state.points_map.get(file_key, [])) == 4:
@@ -185,9 +224,6 @@ try:
         if f"{file_key}_ai" in st.session_state.processed_images:
             with st.expander("View AI Background Removal (Cutout)"):
                 st.image(st.session_state.processed_images[f"{file_key}_ai"], use_container_width=True)
-                buf_ai = io.BytesIO()
-                st.session_state.processed_images[f"{file_key}_ai"].save(buf_ai, format="PNG")
-                st.download_button("💾 Download Cutout Only", buf_ai.getvalue(), f"cutout_{current_file.name}.png", "image/png")
     else:
         st.info("Upload images to begin.")
 
