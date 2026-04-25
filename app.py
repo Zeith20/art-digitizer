@@ -49,35 +49,40 @@ def render_manual_ui(file_key, ui_image, original_image, scale_ratio):
     """Renders the interactive image and processing button for manual selection."""
     col_m1, col_m2 = st.columns([3, 1])
     with col_m1:
-        st.write("📍 **Tap 4 corners** to manually adjust:")
+        st.write("📍 **Tap 4 corners**:")
     with col_m2:
         if st.button("Reset", key=f"reset_{file_key}"):
             st.session_state.points_map[file_key] = []
             st.rerun()
 
+    # Draw points on a copy of the UI image
     img_to_draw = ui_image.copy()
-    if file_key in st.session_state.points_map:
+    points = st.session_state.points_map.get(file_key, [])
+    if points:
         draw = ImageDraw.Draw(img_to_draw)
-        for p in st.session_state.points_map[file_key]:
+        for p in points:
             x, y = p
-            draw.ellipse((x-5, y-5, x+5, y+5), fill='red')
+            draw.ellipse((x-5, y-5, x+5, y+5), fill='red', outline='white')
 
-    # Use a specific key for the coord component to avoid state loss
+    # Component call - it triggers its own rerun on click
     value = streamlit_image_coordinates(img_to_draw, key=f"coords_{file_key}")
+    
     if value is not None:
         point = (value["x"], value["y"])
         if file_key not in st.session_state.points_map: st.session_state.points_map[file_key] = []
         if point not in st.session_state.points_map[file_key] and len(st.session_state.points_map[file_key]) < 4:
             st.session_state.points_map[file_key].append(point)
-            st.rerun()
+            # REMOVED st.rerun() to prevent double-loading. 
+            # The component already triggered a rerun.
 
-    if file_key in st.session_state.points_map and len(st.session_state.points_map[file_key]) == 4:
+    if len(st.session_state.points_map.get(file_key, [])) == 4:
         if st.button("🚀 Apply Manual Warp", use_container_width=True, key=f"apply_{file_key}"):
-            image_cv = cv2.cvtColor(np.array(original_image), cv2.COLOR_RGB2BGR)
-            pts_scaled = np.array(st.session_state.points_map[file_key], dtype="float32") * scale_ratio 
-            warped_cv = four_point_transform(image_cv, pts_scaled)
-            st.session_state.processed_images[f"{file_key}_warp"] = Image.fromarray(cv2.cvtColor(warped_cv, cv2.COLOR_BGR2RGB))
-            st.rerun()
+            with st.spinner("Processing..."):
+                image_cv = cv2.cvtColor(np.array(original_image), cv2.COLOR_RGB2BGR)
+                pts_scaled = np.array(st.session_state.points_map[file_key], dtype="float32") * scale_ratio 
+                warped_cv = four_point_transform(image_cv, pts_scaled)
+                st.session_state.processed_images[f"{file_key}_warp"] = Image.fromarray(cv2.cvtColor(warped_cv, cv2.COLOR_BGR2RGB))
+                st.rerun()
 
 # --- PAGE SETUP ---
 st.set_page_config(page_title="Art Digitizer", layout="centered")
@@ -87,6 +92,7 @@ st.title("🎨 Smart Art Digitizer")
 if 'points_map' not in st.session_state: st.session_state.points_map = {}
 if 'current_index' not in st.session_state: st.session_state.current_index = 0
 if 'processed_images' not in st.session_state: st.session_state.processed_images = {}
+if 'ui_images' not in st.session_state: st.session_state.ui_images = {}
 
 # --- UI: UPLOAD ---
 uploaded_files = st.file_uploader("Upload drawings", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
@@ -96,6 +102,7 @@ if uploaded_files:
     if 'last_upload_sig' not in st.session_state or st.session_state.last_upload_sig != file_list_sig:
         st.session_state.last_upload_sig = file_list_sig
         st.session_state.current_index = 0
+        st.session_state.ui_images = {} # Clear cached UI images
         st.rerun()
 
     num_files = len(uploaded_files)
@@ -114,13 +121,17 @@ if uploaded_files:
             st.session_state.current_index += 1
             st.rerun()
 
+    # --- IMAGE LOADING & CACHING ---
     original_image = Image.open(current_file).convert("RGB")
     scale_ratio = original_image.width / 350
-    ui_image = original_image.resize((350, int(original_image.height / scale_ratio)))
+    
+    if file_key not in st.session_state.ui_images:
+        st.session_state.ui_images[file_key] = original_image.resize((350, int(original_image.height / scale_ratio)))
+    ui_image = st.session_state.ui_images[file_key]
 
     # --- ACTION BUTTON ---
     if st.button("🌟 Start Smart Digitization (AI + Warp)", use_container_width=True):
-        with st.spinner('AI analyzing layers...'):
+        with st.spinner('AI analyzing...'):
             from rembg import remove
             cleansed_image = remove(original_image)
             st.session_state.processed_images[f"{file_key}_ai"] = cleansed_image
@@ -133,7 +144,7 @@ if uploaded_files:
                 st.session_state.processed_images[f"{file_key}_warp"] = Image.fromarray(cv2.cvtColor(warped_cv, cv2.COLOR_BGR2RGB))
                 st.toast("✅ Smart scan complete!")
             else:
-                st.warning("Could not auto-detect corners. Adjust manually below.")
+                st.warning("Could not auto-detect. Adjust below.")
 
     # --- UI: DISPLAY RESULTS ---
     if f"{file_key}_warp" in st.session_state.processed_images:
@@ -158,12 +169,10 @@ if uploaded_files:
         buf = io.BytesIO()
         st.session_state.processed_images[f"{file_key}_ai"].save(buf, format="PNG")
         st.download_button("💾 Download Cutout", buf.getvalue(), f"cutout_{current_file.name}.png", "image/png")
-        
-        with st.expander("🛠️ Try perspective warp manually"):
+        with st.expander("🛠️ Try perspective warp manually", expanded=True):
             render_manual_ui(file_key, ui_image, original_image, scale_ratio)
 
     else:
-        # If no result exists yet, show the manual UI by default
         render_manual_ui(file_key, ui_image, original_image, scale_ratio)
 
 else:
