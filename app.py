@@ -32,25 +32,15 @@ def four_point_transform(image, pts):
 
 def find_corners_from_mask(pill_image_with_alpha):
     """Detects 4 corners from the alpha channel of a rembg result."""
-    # Convert to CV2 and extract alpha channel
     img_np = np.array(pill_image_with_alpha)
-    if img_np.shape[2] < 4:
-        return None
-    
+    if img_np.shape[2] < 4: return None
     alpha = img_np[:, :, 3]
-    # Find the largest contour on the alpha mask
     cnts, _ = cv2.findContours(alpha, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not cnts:
-        return None
-        
+    if not cnts: return None
     c = max(cnts, key=cv2.contourArea)
     peri = cv2.arcLength(c, True)
     approx = cv2.approxPolyDP(c, 0.02 * peri, True)
-    
-    if len(approx) == 4:
-        return approx.reshape(4, 2)
-    
-    # Fallback to convex hull extreme points
+    if len(approx) == 4: return approx.reshape(4, 2)
     hull = cv2.convexHull(c).reshape(-1, 2)
     s, diff = hull.sum(axis=1), np.diff(hull, axis=1)
     return np.array([hull[np.argmin(s)], hull[np.argmin(diff)], hull[np.argmax(s)], hull[np.argmax(diff)]])
@@ -68,7 +58,6 @@ if 'processed_images' not in st.session_state: st.session_state.processed_images
 uploaded_files = st.file_uploader("Upload drawings", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
 
 if uploaded_files:
-    # Fix the "double upload" bug by resetting index when files change
     file_list_sig = "-".join([f"{f.name}_{f.size}" for f in uploaded_files])
     if 'last_upload_sig' not in st.session_state or st.session_state.last_upload_sig != file_list_sig:
         st.session_state.last_upload_sig = file_list_sig
@@ -79,7 +68,6 @@ if uploaded_files:
     current_file = uploaded_files[st.session_state.current_index]
     file_key = f"{current_file.name}_{current_file.size}"
 
-    # Navigation
     col_nav1, col_nav2, col_nav3 = st.columns([1, 2, 1])
     with col_nav1:
         if st.button("⬅️ Prev") and st.session_state.current_index > 0:
@@ -92,60 +80,48 @@ if uploaded_files:
             st.session_state.current_index += 1
             st.rerun()
 
-    st.caption(f"File: {current_file.name}")
-    
-    # --- PROCESSING ---
     original_image = Image.open(current_file).convert("RGB")
     scale_ratio = original_image.width / 350
     ui_image = original_image.resize((350, int(original_image.height / scale_ratio)))
 
     if st.button("🌟 Start Smart Digitization (AI + Warp)", use_container_width=True):
-        with st.spinner('Phase 1: Removing background...'):
+        with st.spinner('AI analyzing layers...'):
             from rembg import remove
-            # 1. AI Remove Background
             cleansed_image = remove(original_image)
             st.session_state.processed_images[f"{file_key}_ai"] = cleansed_image
-            
-            # 2. Find Corners on the clean mask
             pts = find_corners_from_mask(cleansed_image)
             if pts is not None:
                 st.session_state.points_map[file_key] = [(float(p[0] / scale_ratio), float(p[1] / scale_ratio)) for p in order_points(pts)]
-                
-                # 3. Apply Warp to the ORIGINAL image for full quality
-                with st.spinner('Phase 2: Flattening geometry...'):
-                    image_cv = cv2.cvtColor(np.array(original_image), cv2.COLOR_RGB2BGR)
-                    pts_scaled = np.array(st.session_state.points_map[file_key], dtype="float32") * scale_ratio 
-                    warped_cv = four_point_transform(image_cv, pts_scaled)
-                    final_warp = Image.fromarray(cv2.cvtColor(warped_cv, cv2.COLOR_BGR2RGB))
-                    st.session_state.processed_images[f"{file_key}_warp"] = final_warp
-                    st.toast("✅ Smart scanning complete!")
+                image_cv = cv2.cvtColor(np.array(original_image), cv2.COLOR_RGB2BGR)
+                pts_scaled = np.array(st.session_state.points_map[file_key], dtype="float32") * scale_ratio 
+                warped_cv = four_point_transform(image_cv, pts_scaled)
+                st.session_state.processed_images[f"{file_key}_warp"] = Image.fromarray(cv2.cvtColor(warped_cv, cv2.COLOR_BGR2RGB))
+                st.toast("✅ Smart scan complete!")
             else:
-                st.warning("Could not automatically find corners. Please select them manually.")
+                st.warning("Could not auto-detect corners. Try manual selection.")
 
-    # --- UI: DISPLAY & MANUAL OVERRIDE ---
+    # --- UI: DISPLAY & MANUAL ---
     if f"{file_key}_warp" in st.session_state.processed_images:
-        st.subheader("Final Digitized Result")
+        st.subheader("Result")
         st.image(st.session_state.processed_images[f"{file_key}_warp"], use_container_width=True)
-        
         buf = io.BytesIO()
         st.session_state.processed_images[f"{file_key}_warp"].save(buf, format="PNG")
-        st.download_button("💾 Download Final Result", buf.getvalue(), f"digitized_{current_file.name}.png", "image/png")
-        
-        if st.expander("Manually adjust corners"):
-            st.write("If the auto-warp was wrong, tap the 4 corners below:")
-            # Re-use manual logic if needed
-            pass # (Manual logic can be re-added here if requested)
-
-    elif f"{file_key}_ai" in st.session_state.processed_images:
-        st.subheader("AI Cutout (Background Removed)")
-        st.image(st.session_state.processed_images[f"{file_key}_ai"], use_container_width=True)
-        
-        buf = io.BytesIO()
-        st.session_state.processed_images[f"{file_key}_ai"].save(buf, format="PNG")
-        st.download_button("💾 Download Cutout Only", buf.getvalue(), f"cutout_{current_file.name}.png", "image/png")
+        st.download_button("💾 Download Result", buf.getvalue(), f"digitized_{current_file.name}.png", "image/png")
+        if st.button("Clear and Restart"):
+            if f"{file_key}_warp" in st.session_state.processed_images: del st.session_state.processed_images[f"{file_key}_warp"]
+            if f"{file_key}_ai" in st.session_state.processed_images: del st.session_state.processed_images[f"{file_key}_ai"]
+            st.session_state.points_map[file_key] = []
+            st.rerun()
 
     else:
-        st.write("📍 **Tap the 4 corners** or click the button above to auto-process.")
+        col_m1, col_m2 = st.columns([3, 1])
+        with col_m1:
+            st.write("📍 **Tap 4 corners** for manual warp:")
+        with col_m2:
+            if st.button("Reset"):
+                st.session_state.points_map[file_key] = []
+                st.rerun()
+
         img_to_draw = ui_image.copy()
         if file_key in st.session_state.points_map:
             draw = ImageDraw.Draw(img_to_draw)
@@ -160,5 +136,21 @@ if uploaded_files:
             if point not in st.session_state.points_map[file_key] and len(st.session_state.points_map[file_key]) < 4:
                 st.session_state.points_map[file_key].append(point)
                 st.rerun()
+
+        if file_key in st.session_state.points_map and len(st.session_state.points_map[file_key]) == 4:
+            if st.button("🚀 Process Manual Selection", use_container_width=True):
+                image_cv = cv2.cvtColor(np.array(original_image), cv2.COLOR_RGB2BGR)
+                pts_scaled = np.array(st.session_state.points_map[file_key], dtype="float32") * scale_ratio 
+                warped_cv = four_point_transform(image_cv, pts_scaled)
+                st.session_state.processed_images[f"{file_key}_warp"] = Image.fromarray(cv2.cvtColor(warped_cv, cv2.COLOR_BGR2RGB))
+                st.rerun()
+
+    if f"{file_key}_ai" in st.session_state.processed_images and f"{file_key}_warp" not in st.session_state.processed_images:
+        st.divider()
+        st.subheader("AI Cutout (No Warp)")
+        st.image(st.session_state.processed_images[f"{file_key}_ai"], use_container_width=True)
+        buf = io.BytesIO()
+        st.session_state.processed_images[f"{file_key}_ai"].save(buf, format="PNG")
+        st.download_button("💾 Download Cutout", buf.getvalue(), f"cutout_{current_file.name}.png", "image/png")
 else:
     st.info("Please upload images to get started.")
