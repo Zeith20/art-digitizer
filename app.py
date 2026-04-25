@@ -3,7 +3,14 @@ from PIL import Image, ImageDraw
 import numpy as np
 import cv2
 import io
+import traceback
 from streamlit_image_coordinates import streamlit_image_coordinates
+
+# --- CACHING & MODELS ---
+@st.cache_resource
+def get_remove_fn():
+    from rembg import remove
+    return remove
 
 def order_points(pts):
     rect = np.zeros((4, 2), dtype="float32")
@@ -46,104 +53,111 @@ def find_corners_from_mask(pill_image_with_alpha):
 st.set_page_config(page_title="Art Digitizer", layout="centered")
 st.title("🎨 Smart Art Digitizer")
 
+# Session State Initialization
 if 'points_map' not in st.session_state: st.session_state.points_map = {}
 if 'current_index' not in st.session_state: st.session_state.current_index = 0
 if 'processed_images' not in st.session_state: st.session_state.processed_images = {}
 
-uploaded_files = st.file_uploader("Upload drawings", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
+try:
+    uploaded_files = st.file_uploader("Upload drawings", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
 
-if uploaded_files:
-    file_list_sig = "-".join([f"{f.name}_{f.size}" for f in uploaded_files])
-    if 'last_upload_sig' not in st.session_state or st.session_state.last_upload_sig != file_list_sig:
-        st.session_state.last_upload_sig = file_list_sig
-        st.session_state.current_index = 0
-        st.rerun()
-
-    num_files = len(uploaded_files)
-    current_file = uploaded_files[st.session_state.current_index]
-    file_key = f"{current_file.name}_{current_file.size}"
-
-    # Navigation
-    col_nav1, col_nav2, col_nav3 = st.columns([1, 1, 1])
-    with col_nav1:
-        if st.button("⬅️ Previous") and st.session_state.current_index > 0:
-            st.session_state.current_index -= 1
-            st.rerun()
-    with col_nav2:
-        st.write(f"**{st.session_state.current_index + 1} / {num_files}**")
-    with col_nav3:
-        if st.button("Next ➡️") and st.session_state.current_index < num_files - 1:
-            st.session_state.current_index += 1
+    if uploaded_files:
+        file_list_sig = "-".join([f"{f.name}_{f.size}" for f in uploaded_files])
+        if 'last_upload_sig' not in st.session_state or st.session_state.last_upload_sig != file_list_sig:
+            st.session_state.last_upload_sig = file_list_sig
+            st.session_state.current_index = 0
             st.rerun()
 
-    original_image = Image.open(current_file).convert("RGB")
-    scale_ratio = original_image.width / 350
-    ui_image = original_image.resize((350, int(original_image.height / scale_ratio)))
+        num_files = len(uploaded_files)
+        current_file = uploaded_files[st.session_state.current_index]
+        file_key = f"{current_file.name}_{current_file.size}"
 
-    # --- PRIMARY ACTION ---
-    if st.button("🌟 Start AI Auto-Scan", use_container_width=True):
-        with st.spinner('Analyzing layers...'):
-            from rembg import remove
-            cleansed = remove(original_image)
-            st.session_state.processed_images[f"{file_key}_ai"] = cleansed
-            pts = find_corners_from_mask(cleansed)
-            if pts is not None:
-                st.session_state.points_map[file_key] = [(float(p[0] / scale_ratio), float(p[1] / scale_ratio)) for p in order_points(pts)]
-                st.toast("✅ Auto-detected corners!")
-            st.rerun()
-
-    # --- STABLE MANUAL INTERFACE ---
-    st.divider()
-    col_h1, col_h2 = st.columns([3, 1])
-    with col_h1:
-        st.write("📍 **Tap 4 corners manually** if auto-scan fails:")
-    with col_h2:
-        if st.button("Reset"):
-            st.session_state.points_map[file_key] = []
-            if f"{file_key}_warp" in st.session_state.processed_images: del st.session_state.processed_images[f"{file_key}_warp"]
-            st.rerun()
-
-    # Draw existing points
-    img_display = ui_image.copy()
-    current_pts = st.session_state.points_map.get(file_key, [])
-    if current_pts:
-        draw = ImageDraw.Draw(img_display)
-        for p in current_pts:
-            x, y = p
-            draw.ellipse((x-6, y-6, x+6, y+6), fill='red', outline='white', width=2)
-
-    # Core interaction
-    value = streamlit_image_coordinates(img_display, key=f"v4_{file_key}")
-    
-    if value:
-        new_pt = (value["x"], value["y"])
-        if new_pt not in current_pts and len(current_pts) < 4:
-            st.session_state.points_map[file_key].append(new_pt)
-            st.rerun()
-
-    # Processing Manual/Auto
-    if len(st.session_state.points_map.get(file_key, [])) == 4:
-        if st.button("🚀 Finalize & Flatten Artwork", use_container_width=True, type="primary"):
-            with st.spinner("Warping..."):
-                image_cv = cv2.cvtColor(np.array(original_image), cv2.COLOR_RGB2BGR)
-                pts_scaled = np.array(st.session_state.points_map[file_key], dtype="float32") * scale_ratio 
-                warped_cv = four_point_transform(image_cv, pts_scaled)
-                st.session_state.processed_images[f"{file_key}_warp"] = Image.fromarray(cv2.cvtColor(warped_cv, cv2.COLOR_BGR2RGB))
+        # Navigation
+        col_nav1, col_nav2, col_nav3 = st.columns([1, 1, 1])
+        with col_nav1:
+            if st.button("⬅️ Previous") and st.session_state.current_index > 0:
+                st.session_state.current_index -= 1
+                st.rerun()
+        with col_nav2:
+            st.write(f"**{st.session_state.current_index + 1} / {num_files}**")
+        with col_nav3:
+            if st.button("Next ➡️") and st.session_state.current_index < num_files - 1:
+                st.session_state.current_index += 1
                 st.rerun()
 
-    # --- RESULTS ---
-    if f"{file_key}_warp" in st.session_state.processed_images:
-        st.subheader("Final Result")
-        st.image(st.session_state.processed_images[f"{file_key}_warp"], use_container_width=True)
-        buf = io.BytesIO()
-        st.session_state.processed_images[f"{file_key}_warp"].save(buf, format="PNG")
-        st.download_button("💾 Download Digitized Scan", buf.getvalue(), f"scan_{current_file.name}.png", "image/png")
+        original_image = Image.open(current_file).convert("RGB")
+        # Keep scale ratio simple
+        width, height = original_image.size
+        scale_ratio = width / 350
+        ui_image = original_image.resize((350, int(height / scale_ratio)))
 
-    if f"{file_key}_ai" in st.session_state.processed_images:
-        with st.expander("View AI Background Removal (Cutout)"):
-            st.image(st.session_state.processed_images[f"{file_key}_ai"], use_container_width=True)
-            buf_ai = io.BytesIO()
-            st.session_state.processed_images[f"{file_key}_ai"].save(buf_ai, format="PNG")
-            st.download_button("💾 Download Cutout Only", buf_ai.getvalue(), f"cutout_{current_file.name}.png", "image/png")
-else:
-    st.info("Upload images to begin.")
+        # --- AUTO SCAN ---
+        if st.button("🌟 Start AI Auto-Scan", use_container_width=True):
+            with st.spinner('AI analyzing layers...'):
+                remove_fn = get_remove_fn()
+                cleansed = remove_fn(original_image)
+                st.session_state.processed_images[f"{file_key}_ai"] = cleansed
+                pts = find_corners_from_mask(cleansed)
+                if pts is not None:
+                    st.session_state.points_map[file_key] = [(float(p[0] / scale_ratio), float(p[1] / scale_ratio)) for p in order_points(pts)]
+                    st.toast("✅ Auto-detected corners!")
+                st.rerun()
+
+        # --- MANUAL INTERFACE ---
+        st.divider()
+        col_h1, col_h2 = st.columns([3, 1])
+        with col_h1:
+            st.write("📍 **Tap 4 corners manually**:")
+        with col_h2:
+            if st.button("Reset"):
+                st.session_state.points_map[file_key] = []
+                if f"{file_key}_warp" in st.session_state.processed_images: del st.session_state.processed_images[f"{file_key}_warp"]
+                st.rerun()
+
+        # Display and Interaction
+        img_display = ui_image.copy()
+        current_pts = st.session_state.points_map.get(file_key, [])
+        if current_pts:
+            draw = ImageDraw.Draw(img_display)
+            for p in current_pts:
+                x, y = p
+                draw.ellipse((x-6, y-6, x+6, y+6), fill='red', outline='white', width=2)
+
+        value = streamlit_image_coordinates(img_display, key=f"v5_{file_key}")
+        
+        if value:
+            new_pt = (value["x"], value["y"])
+            if new_pt not in current_pts and len(current_pts) < 4:
+                st.session_state.points_map[file_key].append(new_pt)
+                st.rerun()
+
+        # Warp Execution
+        if len(st.session_state.points_map.get(file_key, [])) == 4:
+            if st.button("🚀 Finalize & Flatten Artwork", use_container_width=True, type="primary"):
+                with st.spinner("Applying geometry warp..."):
+                    image_cv = cv2.cvtColor(np.array(original_image), cv2.COLOR_RGB2BGR)
+                    pts_scaled = np.array(st.session_state.points_map[file_key], dtype="float32") * scale_ratio 
+                    warped_cv = four_point_transform(image_cv, pts_scaled)
+                    st.session_state.processed_images[f"{file_key}_warp"] = Image.fromarray(cv2.cvtColor(warped_cv, cv2.COLOR_BGR2RGB))
+                    st.rerun()
+
+        # --- DISPLAY RESULTS ---
+        if f"{file_key}_warp" in st.session_state.processed_images:
+            st.subheader("Final Result")
+            st.image(st.session_state.processed_images[f"{file_key}_warp"], use_container_width=True)
+            buf = io.BytesIO()
+            st.session_state.processed_images[f"{file_key}_warp"].save(buf, format="PNG")
+            st.download_button("💾 Download Digitized Scan", buf.getvalue(), f"scan_{current_file.name}.png", "image/png")
+
+        if f"{file_key}_ai" in st.session_state.processed_images:
+            with st.expander("View AI Background Removal (Cutout)"):
+                st.image(st.session_state.processed_images[f"{file_key}_ai"], use_container_width=True)
+                buf_ai = io.BytesIO()
+                st.session_state.processed_images[f"{file_key}_ai"].save(buf_ai, format="PNG")
+                st.download_button("💾 Download Cutout Only", buf_ai.getvalue(), f"cutout_{current_file.name}.png", "image/png")
+    else:
+        st.info("Upload images to begin.")
+
+except Exception as e:
+    st.error("🚨 An error occurred!")
+    st.code(traceback.format_exc())
