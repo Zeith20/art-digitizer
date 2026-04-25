@@ -3,5 +3,6 @@ Pillow
 numpy
 opencv-python-headless
 streamlit-image-coordinates
+streamlit-canvas
 rembg[cpu]
 onnxruntime
