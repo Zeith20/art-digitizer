@@ -9,20 +9,23 @@ import traceback
 try:
     from streamlit_image_coordinates import streamlit_image_coordinates
     IMAGE_COORDS_AVAILABLE = True
-except ImportError:
+except Exception as e:
     IMAGE_COORDS_AVAILABLE = False
+    st.sidebar.error(f"Error loading image-coordinates: {e}")
 
 try:
     from streamlit_drawable_canvas import st_canvas
     CANVAS_AVAILABLE = True
-except ImportError:
+except Exception as e:
     CANVAS_AVAILABLE = False
+    st.sidebar.error(f"Error loading canvas: {e}")
 
 try:
     from rembg import remove as rembg_remove
     REMBG_AVAILABLE = True
-except ImportError:
+except Exception as e:
     REMBG_AVAILABLE = False
+    st.sidebar.warning(f"AI removal unavailable: {e}")
 
 # --- UTILS ---
 def order_points(pts):
