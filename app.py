@@ -106,12 +106,14 @@ if uploaded_files:
             st.toast(f"✅ Auto-detected corners for {current_file.name}")
         else:
             st.session_state.points_map[file_key] = []
-            st.toast(f"⚠️ Auto-detection failed for {current_file.name}")
-
+    
     # UI for current image
     col1, col2 = st.columns([3, 1])
     with col1:
-        st.write("📍 **Verify or tap the 4 corners.**")
+        if not st.session_state.points_map[file_key]:
+            st.warning("⚠️ **Auto-detection failed.** Please tap the 4 corners manually.")
+        else:
+            st.write("📍 **Verify or tap the 4 corners.**")
     with col2:
         if st.button("Reset Points"):
             st.session_state.points_map[file_key] = []
