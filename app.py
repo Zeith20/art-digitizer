@@ -42,129 +42,118 @@ def four_point_transform(image, pts):
 
 def auto_detect_corners(image):
     """Attempts to automatically find the 4 corners of the artwork."""
-    # Convert to grayscale and blur
     img_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
     gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
     blur = cv2.GaussianBlur(gray, (5, 5), 0)
-    
-    # Edge detection
     edged = cv2.Canny(blur, 75, 200)
     
-    # Find contours
     cnts, _ = cv2.findContours(edged.copy(), cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
     cnts = sorted(cnts, key=cv2.contourArea, reverse=True)[:5]
     
     for c in cnts:
-        # Approximate the contour
         peri = cv2.arcLength(c, True)
         approx = cv2.approxPolyDP(c, 0.02 * peri, True)
-        
-        # If our approximated contour has four points, we can assume we've found our screen
         if len(approx) == 4:
             return approx.reshape(4, 2)
-            
     return None
 
 # --- PAGE SETUP ---
 st.set_page_config(page_title="Art Digitizer", layout="centered")
 st.title("🎨 Art Digitizer Pipeline")
 
-# Initialize memory to store screen taps
-if 'points' not in st.session_state:
-    st.session_state.points = []
-# Initialize memory to track file changes so we can reset taps for new photos
-if 'current_file' not in st.session_state:
-    st.session_state.current_file = None
+# Initialize session state
+if 'points_map' not in st.session_state:
+    st.session_state.points_map = {}
+if 'current_index' not in st.session_state:
+    st.session_state.current_index = 0
 
 # --- UI: UPLOAD ---
-uploaded_file = st.file_uploader("Upload an image of the artwork", type=["jpg", "jpeg", "png"])
+uploaded_files = st.file_uploader("Upload images of the artwork", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
 
-if uploaded_file is not None:
+if uploaded_files:
+    # Navigation and Progress
+    num_files = len(uploaded_files)
+    st.session_state.current_index = min(st.session_state.current_index, num_files - 1)
     
-    # Reset points if a new file is uploaded
-    if st.session_state.current_file != uploaded_file.name:
-        st.session_state.current_file = uploaded_file.name
-        st.session_state.points = []
-        
-        # --- AUTO DETECTION ---
-        image = Image.open(uploaded_file)
-        # --- SCALING FOR MOBILE UI ---
-        MOBILE_WIDTH = 350
-        scale_ratio = image.width / MOBILE_WIDTH
-        
-        auto_pts = auto_detect_corners(image)
-        if auto_pts is not None:
-            # Order them and scale down to UI coordinates
-            ordered_auto_pts = order_points(auto_pts)
-            st.session_state.points = [(float(p[0] / scale_ratio), float(p[1] / scale_ratio)) for p in ordered_auto_pts]
-            st.toast("✅ Auto-detected corners!")
-        else:
-            st.toast("⚠️ Auto-detection failed. Please tap the corners manually.")
-        
-        st.rerun()
+    col_nav1, col_nav2, col_nav3 = st.columns([1, 2, 1])
+    with col_nav1:
+        if st.button("⬅️ Previous") and st.session_state.current_index > 0:
+            st.session_state.current_index -= 1
+            st.rerun()
+    with col_nav2:
+        st.write(f"**Image {st.session_state.current_index + 1} of {num_files}**")
+        st.caption(f"File: {uploaded_files[st.session_state.current_index].name}")
+    with col_nav3:
+        if st.button("Next ➡️") and st.session_state.current_index < num_files - 1:
+            st.session_state.current_index += 1
+            st.rerun()
 
-    image = Image.open(uploaded_file)
+    current_file = uploaded_files[st.session_state.current_index]
+    file_key = f"{current_file.name}_{current_file.size}"
     
-    # --- SCALING FOR MOBILE UI ---
+    image = Image.open(current_file)
     MOBILE_WIDTH = 350
     scale_ratio = image.width / MOBILE_WIDTH
     new_height = int(image.height / scale_ratio)
     ui_image = image.resize((MOBILE_WIDTH, new_height))
-    
+
+    # Auto-detection for new files in the batch
+    if file_key not in st.session_state.points_map:
+        auto_pts = auto_detect_corners(image)
+        if auto_pts is not None:
+            ordered_auto_pts = order_points(auto_pts)
+            st.session_state.points_map[file_key] = [(float(p[0] / scale_ratio), float(p[1] / scale_ratio)) for p in ordered_auto_pts]
+            st.toast(f"✅ Auto-detected corners for {current_file.name}")
+        else:
+            st.session_state.points_map[file_key] = []
+            st.toast(f"⚠️ Auto-detection failed for {current_file.name}")
+
+    # UI for current image
     col1, col2 = st.columns([3, 1])
     with col1:
-        st.write("📍 **Tap the 4 corners of the drawing.**")
+        st.write("📍 **Verify or tap the 4 corners.**")
     with col2:
-        if st.button("Reset"):
-            st.session_state.points = []
+        if st.button("Reset Points"):
+            st.session_state.points_map[file_key] = []
             st.rerun()
 
-    # Draw red dots on the small UI image
+    # Draw points
     img_to_draw = ui_image.copy()
     draw = ImageDraw.Draw(img_to_draw)
-    for p in st.session_state.points:
+    for p in st.session_state.points_map[file_key]:
         x, y = p
-        r = 5 # Fixed dot size for visibility on small screen
+        r = 5
         draw.ellipse((x-r, y-r, x+r, y+r), fill='red')
 
-    # Display the interactive image (now sized to fit your phone)
-    value = streamlit_image_coordinates(img_to_draw, key="coords")
-
-    # Capture the tap coordinates
+    # Interaction
+    value = streamlit_image_coordinates(img_to_draw, key=f"coords_{file_key}")
     if value is not None:
         point = (value["x"], value["y"])
-        if point not in st.session_state.points and len(st.session_state.points) < 4:
-            st.session_state.points.append(point)
+        if point not in st.session_state.points_map[file_key] and len(st.session_state.points_map[file_key]) < 4:
+            st.session_state.points_map[file_key].append(point)
             st.rerun()
 
-    # Once 4 corners are tapped, process using original resolution
-    if len(st.session_state.points) == 4:
-        st.success("4 corners selected! Ready to process.")
-        
-        if st.button("Crop & Flatten Image"):
+    # Processing
+    if len(st.session_state.points_map[file_key]) == 4:
+        st.success("4 corners selected!")
+        if st.button("Crop & Flatten This Image"):
             with st.spinner('Warping geometry...'):
-                
                 image_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-                
-                # Scale the UI tap coordinates back up to the original high-res image
-                pts = np.array(st.session_state.points, dtype="float32")
+                pts = np.array(st.session_state.points_map[file_key], dtype="float32")
                 pts_scaled = pts * scale_ratio 
-                
-                # Apply the warp
                 warped_cv = four_point_transform(image_cv, pts_scaled)
-                
                 result_image = Image.fromarray(cv2.cvtColor(warped_cv, cv2.COLOR_BGR2RGB))
                 
                 st.subheader("Final Result")
-                st.image(result_image, width='stretch')
+                st.image(result_image, use_container_width=True)
                 
                 buf = io.BytesIO()
                 result_image.save(buf, format="PNG")
-                byte_im = buf.getvalue()
-                
                 st.download_button(
-                    label="Download Cleaned Artwork",
-                    data=byte_im,
-                    file_name="digitized_art.png",
+                    label=f"Download {current_file.name} (Processed)",
+                    data=buf.getvalue(),
+                    file_name=f"digitized_{current_file.name}.png",
                     mime="image/png"
                 )
+else:
+    st.info("Please upload one or more images to get started.")
