@@ -10,7 +10,6 @@ st.set_page_config(page_title="Art Digitizer", layout="centered")
 st.title("🎨 Smart Art Digitizer")
 
 # --- OPTIONAL DEPENDENCIES ---
-# We check these after set_page_config
 IMAGE_COORDS_ERROR = None
 try:
     from streamlit_image_coordinates import streamlit_image_coordinates
@@ -81,6 +80,7 @@ if 'processed_images' not in st.session_state: st.session_state.processed_images
 # Debug Sidebar
 with st.sidebar:
     st.header("Debug Info")
+    st.write(f"Streamlit Version: `{st.__version__}`")
     st.write(f"Canvas: {'✅' if CANVAS_AVAILABLE else '❌'}")
     if CANVAS_ERROR: st.error(f"Canvas Error: {CANVAS_ERROR}")
     st.write(f"Coords: {'✅' if IMAGE_COORDS_AVAILABLE else '❌'}")
@@ -154,12 +154,10 @@ try:
                 st.rerun()
 
         current_pts = st.session_state.points_map.get(file_key, [])
-        
         interface_shown = False
 
         if CANVAS_AVAILABLE:
             try:
-                # Interactive Canvas
                 canvas_key = st.session_state.get(f"canvas_key_{file_key}", 0)
                 initial_drawing = {"version": "4.4.0", "objects": []}
                 for p in current_pts:
@@ -198,27 +196,53 @@ try:
                 CANVAS_AVAILABLE = False
 
         if not interface_shown and IMAGE_COORDS_AVAILABLE:
-            # Fallback Click interface
-            st.info("Using click-to-select interface.")
-            temp_ui = ui_image.copy()
-            draw = ImageDraw.Draw(temp_ui)
-            for i, p in enumerate(current_pts):
-                draw.ellipse([p[0]-5, p[1]-5, p[0]+5, p[1]+5], fill="red", outline="white")
-                draw.text((p[0]+8, p[1]+8), str(i+1), fill="red")
-            
-            value = streamlit_image_coordinates(temp_ui, key=f"coords_{file_key}")
-            if value:
-                new_p = (float(value["x"]), float(value["y"]))
-                if not current_pts or np.linalg.norm(np.array(new_p) - np.array(current_pts[-1])) > 5:
-                    if len(current_pts) < 4:
-                        if file_key not in st.session_state.points_map:
-                            st.session_state.points_map[file_key] = []
-                        st.session_state.points_map[file_key].append(new_p)
-                        st.rerun()
-            interface_shown = True
+            try:
+                st.info("Using click-to-select interface.")
+                temp_ui = ui_image.copy()
+                draw = ImageDraw.Draw(temp_ui)
+                for i, p in enumerate(current_pts):
+                    draw.ellipse([p[0]-5, p[1]-5, p[0]+5, p[1]+5], fill="red", outline="white")
+                    draw.text((p[0]+8, p[1]+8), str(i+1), fill="red")
+                
+                value = streamlit_image_coordinates(temp_ui, key=f"coords_{file_key}")
+                if value:
+                    new_p = (float(value["x"]), float(value["y"]))
+                    if not current_pts or np.linalg.norm(np.array(new_p) - np.array(current_pts[-1])) > 5:
+                        if len(current_pts) < 4:
+                            if file_key not in st.session_state.points_map:
+                                st.session_state.points_map[file_key] = []
+                            st.session_state.points_map[file_key].append(new_p)
+                            st.rerun()
+                interface_shown = True
+            except Exception as e:
+                st.sidebar.error(f"Coords runtime error: {e}")
+                IMAGE_COORDS_AVAILABLE = False
 
         if not interface_shown:
-            st.error("No interactive interface could be loaded. Please check the sidebar for details.")
+            st.warning("⚠️ Interactive interface failed to load. Using manual sliders fallback.")
+            st.image(ui_image, width='stretch')
+            
+            # Manual coordinate entry fallback
+            st.subheader("Manual Corner Entry")
+            new_pts = []
+            cols = st.columns(2)
+            for i in range(4):
+                with cols[i % 2]:
+                    default_x = int(current_pts[i][0]) if i < len(current_pts) else (0 if i in [0, 3] else ui_image.width)
+                    default_y = int(current_pts[i][1]) if i < len(current_pts) else (0 if i in [0, 1] else ui_image.height)
+                    
+                    x = st.slider(f"P{i+1} X (Horizontal)", 0, ui_image.width, default_x, key=f"sl_x_{file_key}_{i}")
+                    y = st.slider(f"P{i+1} Y (Vertical)", 0, ui_image.height, default_y, key=f"sl_y_{file_key}_{i}")
+                    new_pts.append((float(x), float(y)))
+            
+            if st.button("Apply Manual Points", width='stretch'):
+                st.session_state.points_map[file_key] = new_pts
+                st.toast("Points updated manually!")
+                st.rerun()
+            
+            # If we have manually set points, we still allow the Finalize button below
+            if len(st.session_state.points_map.get(file_key, [])) == 4:
+                interface_shown = True
 
         # Warp Execution
         if len(st.session_state.points_map.get(file_key, [])) == 4:
