@@ -139,41 +139,45 @@ try:
         current_pts = st.session_state.points_map.get(file_key, [])
         
         if CANVAS_AVAILABLE:
-            # Interactive Canvas
-            canvas_key = st.session_state.get(f"canvas_key_{file_key}", 0)
-            initial_drawing = {"version": "4.4.0", "objects": []}
-            for p in current_pts:
-                initial_drawing["objects"].append({
-                    "type": "circle", "left": p[0] - 5, "top": p[1] - 5, "radius": 5,
-                    "fill": "red", "stroke": "white", "strokeWidth": 2, "selectable": True, "hasControls": False,
-                })
+            try:
+                # Interactive Canvas
+                canvas_key = st.session_state.get(f"canvas_key_{file_key}", 0)
+                initial_drawing = {"version": "4.4.0", "objects": []}
+                for p in current_pts:
+                    initial_drawing["objects"].append({
+                        "type": "circle", "left": p[0] - 5, "top": p[1] - 5, "radius": 5,
+                        "fill": "red", "stroke": "white", "strokeWidth": 2, "selectable": True, "hasControls": False,
+                    })
 
-            canvas_result = st_canvas(
-                fill_color="rgba(255, 0, 0, 0.3)",
-                stroke_width=2,
-                stroke_color="white",
-                background_image=ui_image,
-                update_streamlit=True,
-                height=ui_image.height,
-                width=ui_image.width,
-                drawing_mode="point" if len(current_pts) < 4 else "transform",
-                point_display_radius=5,
-                initial_drawing=initial_drawing if current_pts else None,
-                key=f"canvas_{file_key}_{canvas_key}",
-            )
+                canvas_result = st_canvas(
+                    fill_color="rgba(255, 0, 0, 0.3)",
+                    stroke_width=2,
+                    stroke_color="white",
+                    background_image=ui_image,
+                    update_streamlit=True,
+                    height=ui_image.height,
+                    width=ui_image.width,
+                    drawing_mode="point" if len(current_pts) < 4 else "transform",
+                    point_display_radius=5,
+                    initial_drawing=initial_drawing if current_pts else None,
+                    key=f"canvas_{file_key}_{canvas_key}",
+                )
 
-            if canvas_result.json_data is not None:
-                new_pts = []
-                for obj in canvas_result.json_data["objects"]:
-                    if obj["type"] == "circle":
-                        new_pts.append((float(obj["left"] + 5), float(obj["top"] + 5)))
-                
-                if new_pts != current_pts:
-                    st.session_state.points_map[file_key] = new_pts
-                    if (len(current_pts) < 4 and len(new_pts) >= 4) or (len(current_pts) >= 4 and len(new_pts) < 4):
-                        st.rerun()
+                if canvas_result.json_data is not None:
+                    new_pts = []
+                    for obj in canvas_result.json_data["objects"]:
+                        if obj["type"] == "circle":
+                            new_pts.append((float(obj["left"] + 5), float(obj["top"] + 5)))
+                    
+                    if new_pts != current_pts:
+                        st.session_state.points_map[file_key] = new_pts
+                        if (len(current_pts) < 4 and len(new_pts) >= 4) or (len(current_pts) >= 4 and len(new_pts) < 4):
+                            st.rerun()
+            except Exception:
+                # If st_canvas fails at runtime (e.g. image_to_url error), fall back
+                CANVAS_AVAILABLE = False
 
-        elif IMAGE_COORDS_AVAILABLE:
+        if not CANVAS_AVAILABLE and IMAGE_COORDS_AVAILABLE:
             # Fallback Click interface
             st.info("Using click-to-select (Canvas library not found). Click 4 corners in order.")
             temp_ui = ui_image.copy()
