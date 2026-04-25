@@ -58,6 +58,20 @@ def four_point_transform(image, pts):
     M = cv2.getPerspectiveTransform(rect, dst)
     return cv2.warpPerspective(image, M, (maxWidth, maxHeight))
 
+def find_corners_from_mask(pill_image_with_alpha):
+    img_np = np.array(pill_image_with_alpha)
+    if img_np.shape[2] < 4: return None
+    alpha = img_np[:, :, 3]
+    cnts, _ = cv2.findContours(alpha, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not cnts: return None
+    c = max(cnts, key=cv2.contourArea)
+    peri = cv2.arcLength(c, True)
+    approx = cv2.approxPolyDP(c, 0.02 * peri, True)
+    if len(approx) == 4: return approx.reshape(4, 2)
+    hull = cv2.convexHull(c).reshape(-1, 2)
+    s, diff = hull.sum(axis=1), np.diff(hull, axis=1)
+    return np.array([hull[np.argmin(s)], hull[np.argmin(diff)], hull[np.argmax(s)], hull[np.argmax(diff)]])
+
 # Session State Initialization
 if 'points_map' not in st.session_state: st.session_state.points_map = {}
 if 'current_index' not in st.session_state: st.session_state.current_index = 0
@@ -112,9 +126,14 @@ try:
                 with st.spinner('AI analyzing layers...'):
                     cleansed = rembg_remove(original_image)
                     st.session_state.processed_images[f"{file_key}_ai"] = cleansed
-                    # Simplified corner logic for AI scan
-                    st.session_state.points_map[file_key] = [(0,0), (display_width,0), (display_width, ui_image.height), (0, ui_image.height)]
-                    st.toast("AI scan done! Adjust points manually below.")
+                    pts = find_corners_from_mask(cleansed)
+                    if pts is not None:
+                        pts_ordered = order_points(pts)
+                        # Map detected corners to the UI scale
+                        st.session_state.points_map[file_key] = [(int(p[0] / scale_ratio), int(p[1] / scale_ratio)) for p in pts_ordered]
+                        st.toast("✅ Auto-detected corners!")
+                    else:
+                        st.warning("Could not auto-detect corners. Please set manually.")
                     st.rerun()
 
         # --- MANUAL INTERFACE ---
@@ -201,6 +220,10 @@ try:
             buf = io.BytesIO()
             st.session_state.processed_images[f"{file_key}_warp"].save(buf, format="PNG")
             st.download_button("💾 Download Digitized Scan", buf.getvalue(), f"scan_{current_file.name}.png", "image/png")
+
+        if f"{file_key}_ai" in st.session_state.processed_images:
+            with st.expander("View AI Background Removal (Cutout)"):
+                st.image(st.session_state.processed_images[f"{file_key}_ai"], use_container_width=True)
 
     else:
         st.info("Upload images to begin.")
