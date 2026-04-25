@@ -121,6 +121,10 @@ try:
         scale_ratio = width / display_width
         ui_image = original_image.resize((display_width, int(height / scale_ratio)))
 
+        # --- PREVIEW ---
+        st.subheader("Image Preview")
+        st.image(ui_image, use_container_width=True)
+
         # --- AUTO SCAN ---
         if REMBG_AVAILABLE:
             if st.button("🌟 Start AI Auto-Scan", use_container_width=True):
@@ -145,7 +149,7 @@ try:
         st.divider()
         col_h1, col_h2 = st.columns([3, 1])
         with col_h1:
-            st.write("📍 **Define 4 corners**:")
+            st.subheader("📍 Define 4 Corners")
         with col_h2:
             if st.button("Reset"):
                 st.session_state.points_map[file_key] = []
@@ -158,7 +162,7 @@ try:
 
         if CANVAS_AVAILABLE:
             try:
-                canvas_key = st.session_state.get(f"canvas_key_{file_key}", 0)
+                canvas_id = st.session_state.get(f"canvas_key_{file_key}", 0)
                 initial_drawing = {"version": "4.4.0", "objects": []}
                 for p in current_pts:
                     initial_drawing["objects"].append({
@@ -175,21 +179,25 @@ try:
                     height=ui_image.height,
                     width=ui_image.width,
                     drawing_mode="point" if len(current_pts) < 4 else "transform",
-                    point_display_radius=5,
+                    point_display_radius=8,
                     initial_drawing=initial_drawing if current_pts else None,
-                    key=f"canvas_{file_key}_{canvas_key}",
+                    key=f"canvas_{file_key}_{canvas_id}",
                 )
 
                 if canvas_result.json_data is not None:
                     new_pts = []
                     for obj in canvas_result.json_data["objects"]:
                         if obj["type"] == "circle":
-                            new_pts.append((float(obj["left"] + 5), float(obj["top"] + 5)))
+                            # Round to avoid float precision loops
+                            new_pts.append((round(float(obj["left"] + 5), 1), round(float(obj["top"] + 5), 1)))
                     
-                    if new_pts != current_pts:
-                        st.session_state.points_map[file_key] = new_pts
-                        if (len(current_pts) < 4 and len(new_pts) >= 4) or (len(current_pts) >= 4 and len(new_pts) < 4):
-                            st.rerun()
+                    if len(new_pts) > 0:
+                        rounded_current = [(round(p[0], 1), round(p[1], 1)) for p in current_pts]
+                        if new_pts != rounded_current:
+                            st.session_state.points_map[file_key] = new_pts
+                            # Only rerun if the point count changes (mode swap)
+                            if len(new_pts) != len(current_pts):
+                                st.rerun()
                 interface_shown = True
             except Exception as e:
                 st.sidebar.error(f"Canvas runtime error: {e}")
@@ -219,28 +227,20 @@ try:
                 IMAGE_COORDS_AVAILABLE = False
 
         if not interface_shown:
-            st.warning("⚠️ Interactive interface failed to load. Using manual sliders fallback.")
-            st.image(ui_image, use_container_width=True)
-            
-            # Manual coordinate entry fallback
-            st.subheader("Manual Corner Entry")
+            st.warning("⚠️ Interactive tools failed. Using manual sliders.")
             new_pts = []
             cols = st.columns(2)
             for i in range(4):
                 with cols[i % 2]:
-                    default_x = int(current_pts[i][0]) if i < len(current_pts) else (0 if i in [0, 3] else ui_image.width)
-                    default_y = int(current_pts[i][1]) if i < len(current_pts) else (0 if i in [0, 1] else ui_image.height)
-                    
-                    x = st.slider(f"P{i+1} X (Horizontal)", 0, ui_image.width, default_x, key=f"sl_x_{file_key}_{i}")
-                    y = st.slider(f"P{i+1} Y (Vertical)", 0, ui_image.height, default_y, key=f"sl_y_{file_key}_{i}")
+                    def_x = int(current_pts[i][0]) if i < len(current_pts) else (0 if i in [0, 3] else ui_image.width)
+                    def_y = int(current_pts[i][1]) if i < len(current_pts) else (0 if i in [0, 1] else ui_image.height)
+                    x = st.slider(f"P{i+1} X", 0, ui_image.width, def_x, key=f"sl_x_{file_key}_{i}")
+                    y = st.slider(f"P{i+1} Y", 0, ui_image.height, def_y, key=f"sl_y_{file_key}_{i}")
                     new_pts.append((float(x), float(y)))
             
             if st.button("Apply Manual Points", use_container_width=True):
                 st.session_state.points_map[file_key] = new_pts
-                st.toast("Points updated manually!")
                 st.rerun()
-            
-            # If we have manually set points, we still allow the Finalize button below
             if len(st.session_state.points_map.get(file_key, [])) == 4:
                 interface_shown = True
 
