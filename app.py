@@ -52,17 +52,35 @@ def four_point_transform(image, pts):
     M = cv2.getPerspectiveTransform(rect, dst)
     return cv2.warpPerspective(image, M, (maxWidth, maxHeight))
 
-def find_corners_advanced(pill_image_with_alpha):
+def analyze_shape_and_get_corners(pill_image_with_alpha):
+    """Analyzes mask to decide if it's a rectangle or an irregular shape."""
     img_np = np.array(pill_image_with_alpha)
-    if img_np.shape[2] < 4: return None
+    if img_np.shape[2] < 4: return None, "none"
     alpha = img_np[:, :, 3]
     _, alpha = cv2.threshold(alpha, 10, 255, cv2.THRESH_BINARY)
     cnts, _ = cv2.findContours(alpha, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not cnts: return None
+    if not cnts: return None, "none"
     c = max(cnts, key=cv2.contourArea)
-    hull = cv2.convexHull(c).reshape(-1, 2)
-    s, diff = hull.sum(axis=1), np.diff(hull, axis=1)
-    return np.array([hull[np.argmin(s)], hull[np.argmin(diff)], hull[np.argmax(s)], hull[np.argmax(diff)]], dtype="float32")
+    
+    # Analyze rectangularity
+    peri = cv2.arcLength(c, True)
+    approx = cv2.approxPolyDP(c, 0.02 * peri, True)
+    area = cv2.contourArea(c)
+    rect_points = cv2.minAreaRect(c)
+    rect_area = rect_points[1][0] * rect_points[1][1]
+    
+    # Solidity/Rectangularity check (Is it mostly a box?)
+    is_rectangular = (len(approx) == 4) or (rect_area > 0 and (area / rect_area) > 0.85)
+    
+    if is_rectangular:
+        # TL, TR, BR, BL fallback for rectangles
+        hull = cv2.convexHull(c).reshape(-1, 2)
+        s = hull.sum(axis=1)
+        diff = np.diff(hull, axis=1)
+        pts = np.array([hull[np.argmin(s)], hull[np.argmin(diff)], hull[np.argmax(s)], hull[np.argmax(diff)]], dtype="float32")
+        return pts, "rectangle"
+    
+    return None, "irregular"
 
 # Session State
 if 'points_map' not in st.session_state: st.session_state.points_map = {}
@@ -117,77 +135,84 @@ try:
             st.image(ui_image, use_container_width=True)
             if REMBG_AVAILABLE:
                 if st.button("🚀 Start AI Auto-Digitize", use_container_width=True, type="primary"):
-                    with st.spinner('Analyzing...'):
+                    with st.spinner('Analyzing shape...'):
                         cleansed = rembg_remove(original_image)
                         st.session_state.processed_images[f"{file_key}_ai"] = cleansed
-                        pts = find_corners_advanced(cleansed)
-                        if pts is not None:
+                        
+                        pts, shape_type = analyze_shape_and_get_corners(cleansed)
+                        
+                        if shape_type == "rectangle" and pts is not None:
                             st.session_state.points_map[file_key] = [(int(p[0] / scale_ratio), int(p[1] / scale_ratio)) for p in pts]
                             image_cv = cv2.cvtColor(np.array(original_image), cv2.COLOR_RGB2BGR)
                             warped_cv = four_point_transform(image_cv, pts)
-                            st.session_state.processed_images[f"{file_key}_warp"] = Image.fromarray(cv2.cvtColor(warped_cv, cv2.COLOR_BGR2RGB))
+                            st.session_state.processed_images[f"{file_key}_result"] = Image.fromarray(cv2.cvtColor(warped_cv, cv2.COLOR_BGR2RGB))
+                            st.toast("✅ Detected Rectangular Art - Applied Perspective Correction")
+                        else:
+                            # Irregular shape - just show the cutout
+                            st.session_state.processed_images[f"{file_key}_result"] = cleansed
+                            st.toast("✅ Detected Irregular Shape - Background Removed")
                         st.rerun()
             else: st.error("AI Library unavailable.")
 
         # --- STEP 2: RESULTS ---
         else:
-            if f"{file_key}_warp" in st.session_state.processed_images:
+            if f"{file_key}_result" in st.session_state.processed_images:
                 st.subheader("✨ Digitized Result")
-                st.image(st.session_state.processed_images[f"{file_key}_warp"], use_container_width=True)
+                st.image(st.session_state.processed_images[f"{file_key}_result"], use_container_width=True)
                 
                 c_res1, c_res2 = st.columns(2)
                 with c_res1:
                     buf = io.BytesIO()
-                    st.session_state.processed_images[f"{file_key}_warp"].save(buf, format="PNG")
-                    st.download_button("💾 Download", buf.getvalue(), f"scan_{current_file.name}.png", "image/png", use_container_width=True)
+                    st.session_state.processed_images[f"{file_key}_result"].save(buf, format="PNG")
+                    st.download_button("💾 Download PNG", buf.getvalue(), f"scan_{current_file.name}.png", "image/png", use_container_width=True)
                 with c_res2:
                     if st.button("🔄 Redo AI", use_container_width=True):
-                        del st.session_state.processed_images[f"{file_key}_ai"]
-                        if f"{file_key}_warp" in st.session_state.processed_images: del st.session_state.processed_images[f"{file_key}_warp"]
+                        if f"{file_key}_ai" in st.session_state.processed_images: del st.session_state.processed_images[f"{file_key}_ai"]
+                        if f"{file_key}_result" in st.session_state.processed_images: del st.session_state.processed_images[f"{file_key}_result"]
                         st.session_state.points_map[file_key] = []
                         st.rerun()
 
-            # --- STEP 3: MANUAL TOOL (ISOLATED FRAGMENT) ---
+            # --- STEP 3: MANUAL TOOL ---
             @st.fragment
             def manual_tool():
                 st.divider()
-                st.subheader("📍 Fine-tune Corners")
-                
-                pts = st.session_state.points_map.get(file_key, [])
-                
-                if IMAGE_COORDS_AVAILABLE:
-                    temp_ui = ui_image.copy()
-                    draw = ImageDraw.Draw(temp_ui)
-                    for i, p in enumerate(pts):
-                        draw.ellipse([p[0]-6, p[1]-6, p[0]+6, p[1]+6], fill="red", outline="white", width=2)
-                        draw.text((p[0]+10, p[1]+10), str(i+1), fill="red")
+                with st.expander("📍 Fine-tune Corners / Forced Warp"):
+                    st.caption("Click 4 corners if you want to force a perspective flattening on an irregular shape.")
+                    pts = st.session_state.points_map.get(file_key, [])
                     
-                    value = streamlit_image_coordinates(temp_ui, key=f"coords_{file_key}")
-                    if value:
-                        click = (int(value["x"]), int(value["y"]))
-                        if click != st.session_state.last_click:
-                            st.session_state.last_click = click
-                            if len(pts) < 4:
-                                st.session_state.points_map[file_key].append(click)
-                            else:
-                                st.session_state.points_map[file_key] = [click]
-                            st.rerun()
+                    if IMAGE_COORDS_AVAILABLE:
+                        temp_ui = ui_image.copy()
+                        draw = ImageDraw.Draw(temp_ui)
+                        for i, p in enumerate(pts):
+                            draw.ellipse([p[0]-6, p[1]-6, p[0]+6, p[1]+6], fill="red", outline="white", width=2)
+                            draw.text((p[0]+10, p[1]+10), str(i+1), fill="red")
+                        
+                        value = streamlit_image_coordinates(temp_ui, key=f"coords_{file_key}")
+                        if value:
+                            click = (int(value["x"]), int(value["y"]))
+                            if click != st.session_state.last_click:
+                                st.session_state.last_click = click
+                                if len(pts) < 4:
+                                    st.session_state.points_map[file_key].append(click)
+                                else:
+                                    st.session_state.points_map[file_key] = [click]
+                                st.rerun()
 
-                if len(st.session_state.points_map.get(file_key, [])) == 4:
-                    if st.button("🚀 Re-Apply Corners", use_container_width=True, type="primary"):
-                        image_cv = cv2.cvtColor(np.array(original_image), cv2.COLOR_RGB2BGR)
-                        pts_scaled = np.array(st.session_state.points_map[file_key], dtype="float32") * scale_ratio 
-                        warped_cv = four_point_transform(image_cv, pts_scaled)
-                        st.session_state.processed_images[f"{file_key}_warp"] = Image.fromarray(cv2.cvtColor(warped_cv, cv2.COLOR_BGR2RGB))
-                        st.rerun()
+                    if len(st.session_state.points_map.get(file_key, [])) == 4:
+                        if st.button("🚀 Apply Manual Perspective", use_container_width=True, type="primary"):
+                            image_cv = cv2.cvtColor(np.array(original_image), cv2.COLOR_RGB2BGR)
+                            pts_scaled = np.array(st.session_state.points_map[file_key], dtype="float32") * scale_ratio 
+                            warped_cv = four_point_transform(image_cv, pts_scaled)
+                            st.session_state.processed_images[f"{file_key}_result"] = Image.fromarray(cv2.cvtColor(warped_cv, cv2.COLOR_BGR2RGB))
+                            st.rerun()
 
             manual_tool()
 
-            with st.expander("🖼️ View AI Mask"):
+            with st.expander("🖼️ View Original Background-Removed Mask"):
                 st.image(st.session_state.processed_images[f"{file_key}_ai"], use_container_width=True)
 
     else: st.info("Upload images to begin.")
 
 except Exception as e:
-    st.error("🚨 Error!")
+    st.error("🚨 An error occurred!")
     st.code(traceback.format_exc())
