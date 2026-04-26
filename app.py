@@ -50,8 +50,13 @@ def analyze_shape(cutout_bytes, scale):
     if rect_area > 0 and (area / rect_area) > 0.82:
         hull = cv2.convexHull(c).reshape(-1, 2)
         s, d = hull.sum(axis=1), np.diff(hull, axis=1)
-        raw_pts = np.array([hull[np.argmin(s)], hull[np.argmin(d)], hull[np.argmax(s)], hull[np.argmax(d)]], dtype="float32")
-        return [(int(p[0]/scale), int(p[1]/scale)) for p in raw_pts], "rectangle"
+        raw_pts = np.array([hull[np.argmin(s)], hull[np.argmin(d)], hull[np.argmax(s)], hull[np.argmax(diff)] if 'diff' in locals() else hull[np.argmax(d)]], dtype="float32")
+        # Fixed coordinate ordering logic
+        s, d = hull.sum(axis=1), np.diff(hull, axis=1)
+        tl, br = hull[np.argmin(s)], hull[np.argmax(s)]
+        tr, bl = hull[np.argmin(d)], hull[np.argmax(d)]
+        ui_pts = [(int(p[0]/scale), int(p[1]/scale)) for p in [tl, tr, br, bl]]
+        return ui_pts, "rectangle"
     return None, "irregular"
 
 @st.cache_data
@@ -76,88 +81,86 @@ if 'points_map' not in st.session_state: st.session_state.points_map = {}
 if 'processed' not in st.session_state: st.session_state.processed = set()
 if 'last_click' not in st.session_state: st.session_state.last_click = None
 
-# --- UI: MAIN PIPELINE ---
-# Using a single file uploader for maximum stability
-uploaded_file = st.file_uploader("Upload an image to digitize", type=["jpg", "jpeg", "png"])
+try:
+    # 1. FILE UPLOAD
+    uploaded_file = st.file_uploader("Upload an image to digitize", type=["jpg", "jpeg", "png"])
 
-if uploaded_file:
-    file_key = f"{uploaded_file.name}_{uploaded_file.size}"
-    file_bytes = uploaded_file.getvalue()
+    if uploaded_file:
+        file_key = f"{uploaded_file.name}_{uploaded_file.size}"
+        file_bytes = uploaded_file.getvalue()
 
-    # Fast UI Resize
-    img_raw = Image.open(io.BytesIO(file_bytes)).convert("RGB")
-    w, h = img_raw.size
-    scale = w / 450
-    ui_img = img_raw.resize((450, int(h / scale)))
+        img_raw = Image.open(io.BytesIO(file_bytes)).convert("RGB")
+        w, h = img_raw.size
+        scale = w / 450
+        ui_img = img_raw.resize((450, int(h / scale)))
 
-    # --- STEP 1: AI SCAN ---
-    if file_key not in st.session_state.processed:
-        st.subheader("Original Image")
-        st.image(ui_img, use_container_width=True)
-        if REMBG_AVAILABLE:
-            if st.button("🚀 Start AI Auto-Digitize", use_container_width=True, type="primary"):
-                with st.spinner('Analyzing...'):
-                    cutout = get_cutout(file_bytes)
-                    buf = io.BytesIO(); cutout.save(buf, format="PNG")
-                    pts, shape = analyze_shape(buf.getvalue(), scale)
-                    if shape == "rectangle" and pts:
-                        st.session_state.points_map[file_key] = pts
-                    st.session_state.processed.add(file_key)
-                    st.rerun()
-        else: st.error("AI Library unavailable.")
+        # --- STEP 1: AI SCAN ---
+        if file_key not in st.session_state.processed:
+            st.subheader("Original Image")
+            st.image(ui_img, use_container_width=True)
+            if REMBG_AVAILABLE:
+                if st.button("🚀 Start AI Auto-Digitize", use_container_width=True, type="primary"):
+                    with st.spinner('Analyzing...'):
+                        cutout = get_cutout(file_bytes)
+                        buf = io.BytesIO(); cutout.save(buf, format="PNG")
+                        pts, shape = analyze_shape(buf.getvalue(), scale)
+                        if shape == "rectangle" and pts:
+                            st.session_state.points_map[file_key] = pts
+                        st.session_state.processed.add(file_key)
+                        st.rerun()
+            else: st.error("AI Library unavailable.")
 
-    # --- STEP 2: RESULTS ---
-    else:
-        pts = st.session_state.points_map.get(file_key, [])
-        if len(pts) == 4:
-            res = get_flattened(file_bytes, pts, scale)
-            st.subheader("✨ Perspective Corrected Scan")
+        # --- STEP 2: RESULTS ---
         else:
-            res = get_cutout(file_bytes)
-            st.subheader("✨ Clean Cutout")
-        
-        st.image(res, use_container_width=True)
-        
-        c1, c2 = st.columns(2)
-        with c1:
-            buf = io.BytesIO(); res.save(buf, format="PNG")
-            st.download_button("💾 Download PNG", buf.getvalue(), f"scan_{uploaded_file.name}.png", "image/png", use_container_width=True)
-        with c2:
-            if st.button("🔄 Reset Image", use_container_width=True):
-                st.session_state.processed.discard(file_key)
-                st.session_state.points_map.pop(file_key, None)
-                st.rerun()
+            pts = st.session_state.points_map.get(file_key, [])
+            if len(pts) == 4:
+                res = get_flattened(file_bytes, pts, scale)
+                st.subheader("✨ Perspective Corrected Scan")
+            else:
+                res = get_cutout(file_bytes)
+                st.subheader("✨ Clean Cutout")
+            
+            st.image(res, use_container_width=True)
+            
+            c1, c2 = st.columns(2)
+            with c1:
+                buf = io.BytesIO(); res.save(buf, format="PNG")
+                st.download_button("💾 Download PNG", buf.getvalue(), f"scan_{uploaded_file.name}.png", "image/png", use_container_width=True)
+            with c2:
+                if st.button("🔄 Reset Image", use_container_width=True):
+                    st.session_state.processed.discard(file_key)
+                    st.session_state.points_map.pop(file_key, None)
+                    st.rerun()
 
-        # --- STEP 3: MANUAL FIX ---
-        @st.fragment
-        def manual_tool():
-            st.divider()
-            with st.expander("📍 Fine-tune Corners"):
-                cur_pts = st.session_state.points_map.get(file_key, [])
-                tmp = ui_img.copy(); draw = ImageDraw.Draw(tmp)
-                for i, p in enumerate(cur_pts):
-                    draw.ellipse([p[0]-6, p[1]-6, p[0]+6, p[1]+6], fill="red", outline="white", width=2)
-                
-                val = streamlit_image_coordinates(tmp, key=f"coord_{file_key}")
-                if val:
-                    clk = (int(val["x"]), int(val["y"]))
-                    if clk != st.session_state.last_click:
-                        st.session_state.last_click = clk
-                        if len(cur_pts) < 4:
-                            if file_key not in st.session_state.points_map: st.session_state.points_map[file_key] = []
-                            st.session_state.points_map[file_key].append(clk)
-                        else:
-                            st.session_state.points_map[file_key] = [clk]
-                        st.rerun()
-                if len(cur_pts) == 4:
-                    if st.button("🚀 Apply Manual Points", use_container_width=True, type="primary"):
-                        st.rerun()
-        manual_tool()
+            # --- STEP 3: MANUAL FIX ---
+            @st.fragment
+            def manual_tool():
+                st.divider()
+                with st.expander("📍 Fine-tune Corners"):
+                    cur_pts = st.session_state.points_map.get(file_key, [])
+                    tmp = ui_img.copy(); draw = ImageDraw.Draw(tmp)
+                    for i, p in enumerate(cur_pts):
+                        draw.ellipse([p[0]-6, p[1]-6, p[0]+6, p[1]+6], fill="red", outline="white", width=2)
+                    
+                    val = streamlit_image_coordinates(tmp, key=f"coord_{file_key}")
+                    if val:
+                        clk = (int(val["x"]), int(val["y"]))
+                        if clk != st.session_state.last_click:
+                            st.session_state.last_click = clk
+                            if len(cur_pts) < 4:
+                                if file_key not in st.session_state.points_map: st.session_state.points_map[file_key] = []
+                                st.session_state.points_map[file_key].append(clk)
+                            else:
+                                st.session_state.points_map[file_key] = [clk]
+                            st.rerun()
+                    if len(cur_pts) == 4:
+                        if st.button("🚀 Apply Manual Points", use_container_width=True, type="primary"):
+                            st.rerun()
+            manual_tool()
 
-else:
-    st.info("Upload an image of your artwork to begin.")
-    st.caption("Tip: For best results, use high-resolution photos with good lighting.")
+    else:
+        st.info("Upload an image of your artwork to begin.")
 
 except Exception as e:
-    st.error("🚨 Connection issue or file error. Please refresh the browser.")
+    st.error("🚨 An error occurred. Please refresh.")
     st.code(traceback.format_exc())
