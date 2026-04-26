@@ -113,3 +113,4 @@ try:
 except Exception as e:
     st.error("🚨 An application error occurred.")
     st.code(traceback.format_exc())
+# Force Streamlit Rebuild: 2026-04-25
