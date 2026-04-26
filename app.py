@@ -5,7 +5,14 @@ import os
 from PIL import Image
 import traceback
 
-# Optimized search path
+# --- EMERGENCY RECOVERY ---
+# Clear all server cache on every boot while we recover from the crash loop
+try:
+    st.cache_data.clear()
+except:
+    pass
+
+# Ensure path discovery
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # Modular Imports
@@ -23,19 +30,15 @@ initialize_session_state()
 st.set_page_config(page_title="Art Digitizer Pro", layout="centered")
 st.title("🎨 Smart Art Digitizer")
 
-# --- GLOBAL MEMORY RECOVERY ---
+# --- SIDEBAR RECOVERY ---
 with st.sidebar:
     st.header("Admin & Recovery")
-    if st.button("🚨 EMERGENCY RESET (Clear All Cache)", use_container_width=True, type="primary"):
+    if st.button("🚨 FORCE CLEAR CACHE", use_container_width=True, type="primary"):
         st.cache_data.clear()
-        st.session_state.scanned_files = set()
-        st.session_state.points_map = {}
-        st.session_state.current_index = 0
-        st.success("Cache cleared! Please refresh your browser.")
         st.rerun()
 
 try:
-    # 1. LIGHTWEIGHT FILE UPLOAD (Max 200 files)
+    # 1. LIGHTWEIGHT FILE UPLOAD
     uploaded_files = st.file_uploader(
         "Upload artworks from your folder", 
         type=["jpg", "jpeg", "png"], 
@@ -54,20 +57,20 @@ try:
             if st.button("⬅️ Previous") and st.session_state.current_index > 0:
                 st.session_state.current_index -= 1; st.rerun()
         with c_nav2: st.write(f"**{st.session_state.current_index + 1} / {num_files}**")
-        with col_nav3 if 'col_nav3' in locals() else c_nav3:
+        with c_nav3:
             if st.button("Next ➡️") and st.session_state.current_index < num_files - 1:
                 st.session_state.current_index += 1; st.rerun()
 
-        # 2. SELECT CURRENT (No heavy hashing)
+        # SELECT CURRENT
         current_file = uploaded_files[st.session_state.current_index]
         file_key = f"{current_file.name}_{current_file.size}"
-        
-        # 3. ON-DEMAND LOAD
-        img_raw = Image.open(current_file).convert("RGB")
-        ui_img, scale_ratio = resize_for_ui(img_raw)
         file_bytes = current_file.getvalue()
+        
+        # ON-DEMAND PREVIEW
+        img_raw = Image.open(io.BytesIO(file_bytes)).convert("RGB")
+        ui_img, scale_ratio = resize_for_ui(img_raw)
 
-        # --- STEP 1: AI SCAN ---
+        # --- STEP 1: AI SCAN PIPELINE ---
         if not is_scanned(file_key):
             st.subheader(f"📄 {current_file.name}")
             st.image(ui_img, use_container_width=True)
@@ -75,11 +78,9 @@ try:
                 if st.button("🚀 Start AI Auto-Digitize", use_container_width=True, type="primary"):
                     with st.spinner('Analyzing...'):
                         cutout = get_cutout(file_bytes)
-                        # Analysis buffer
                         buf = io.BytesIO(); cutout.save(buf, format="PNG")
                         pts, shape = analyze_shape_and_get_pts(buf.getvalue(), scale_ratio)
-                        if shape == "rectangle" and pts:
-                            set_points(file_key, pts)
+                        if shape == "rectangle" and pts: set_points(file_key, pts)
                         mark_as_scanned(file_key)
                         st.rerun()
             else: st.error("AI Library unavailable.")
@@ -89,10 +90,10 @@ try:
             pts = get_current_pts(file_key)
             if len(pts) == 4:
                 res_img = get_flattened_v2(file_bytes, pts, scale_ratio, masked=True)
-                st.subheader("✨ Final Scan")
+                st.subheader("✨ Scan")
             else:
                 res_img = get_cutout(file_bytes)
-                st.subheader("✨ Clean Cutout")
+                st.subheader("✨ Cutout")
             
             st.image(res_img, use_container_width=True)
             
@@ -106,14 +107,10 @@ try:
                     st.session_state.points_map.pop(file_key, None)
                     st.rerun()
 
-            # Manual Correction
             manual_correction_component(file_key, ui_img)
-            
-            with st.expander("🖼️ View Original AI Mask"):
-                st.image(get_cutout(file_bytes), use_container_width=True)
 
-    else: st.info("Select images from your folder.")
+    else: st.info("Ready for new batch.")
 
 except Exception as e:
-    st.error("🚨 Application Error. Please use the EMERGENCY RESET in the sidebar.")
+    st.error("🚨 Stuck in a loop? Refresh the browser.")
     st.code(traceback.format_exc())
