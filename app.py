@@ -5,26 +5,9 @@ import cv2
 import io
 import traceback
 
-# Optimized UX: 2026-04-25 10:45
 # --- PAGE SETUP ---
 st.set_page_config(page_title="Art Digitizer", layout="centered")
 st.title("🎨 Smart Art Digitizer")
-
-# --- CSS HACK: DISABLE ANIMATIONS & FLICKER ---
-st.markdown("""
-<style>
-    /* Stop images from fading in/out on refresh */
-    [data-testid="stImage"] img {
-        animation: none !important;
-        transition: none !important;
-        opacity: 1 !important;
-    }
-    /* Reduce padding to keep layout stable */
-    .block-container {
-        padding-top: 2rem !important;
-    }
-</style>
-""", unsafe_allow_view_html=True)
 
 # --- OPTIONAL DEPENDENCIES ---
 @st.cache_resource
@@ -70,7 +53,6 @@ def four_point_transform(image, pts):
     return cv2.warpPerspective(image, M, (maxWidth, maxHeight))
 
 def find_corners_advanced(pill_image_with_alpha):
-    """High-quality extreme corner detection."""
     img_np = np.array(pill_image_with_alpha)
     if img_np.shape[2] < 4: return None
     alpha = img_np[:, :, 3]
@@ -102,7 +84,7 @@ try:
         current_file = uploaded_files[st.session_state.current_index]
         file_key = f"{current_file.name}_{current_file.size}"
 
-        # Fast Cached Load
+        # Fast Load
         if f"img_{file_key}" not in st.session_state:
             img = Image.open(current_file).convert("RGB")
             st.session_state[f"img_{file_key}"] = img
@@ -122,7 +104,7 @@ try:
                 st.session_state.current_index -= 1
                 st.rerun()
         with c_nav2: st.write(f"**{st.session_state.current_index + 1} / {num_files}**")
-        with col_nav3 if 'col_nav3' in locals() else c_nav3:
+        with c_nav3:
             if st.button("Next ➡️") and st.session_state.current_index < num_files - 1:
                 st.session_state.current_index += 1
                 st.rerun()
@@ -165,12 +147,11 @@ try:
                         st.session_state.points_map[file_key] = []
                         st.rerun()
 
-            # --- STEP 3: FLICKER-FREE MANUAL TOOL ---
+            # --- STEP 3: MANUAL TOOL (ISOLATED FRAGMENT) ---
             @st.fragment
             def manual_tool():
                 st.divider()
                 st.subheader("📍 Fine-tune Corners")
-                st.caption("Click 4 corners. Fast clicking enabled (no reload delay).")
                 
                 pts = st.session_state.points_map.get(file_key, [])
                 
@@ -187,11 +168,10 @@ try:
                         if click != st.session_state.last_click:
                             st.session_state.last_click = click
                             if len(pts) < 4:
-                                if file_key not in st.session_state.points_map: st.session_state.points_map[file_key] = []
                                 st.session_state.points_map[file_key].append(click)
                             else:
                                 st.session_state.points_map[file_key] = [click]
-                            st.rerun() # targeted rerun (fast due to CSS)
+                            st.rerun()
 
                 if len(st.session_state.points_map.get(file_key, [])) == 4:
                     if st.button("🚀 Re-Apply Corners", use_container_width=True, type="primary"):
