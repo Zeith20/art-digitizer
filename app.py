@@ -28,15 +28,15 @@ def load_coords():
 
 streamlit_image_coordinates, IMAGE_COORDS_AVAILABLE = load_coords()
 
-# --- UTILS & CACHED PROCESSING ---
+# --- CACHED IMAGE ENGINES ---
 @st.cache_data
 def get_cutout(img_bytes):
     img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
     return rembg_remove(img) if REMBG_AVAILABLE else img
 
 @st.cache_data
-def analyze_shape(cutout_bytes, scale):
-    """Detects if artwork is rectangular."""
+def analyze_and_get_pts(cutout_bytes, scale):
+    """Detects corners and decides if it's a rectangle."""
     img_np = np.array(Image.open(io.BytesIO(cutout_bytes)))
     if img_np.shape[2] < 4: return None, "none"
     alpha = img_np[:, :, 3]
@@ -44,20 +44,11 @@ def analyze_shape(cutout_bytes, scale):
     cnts, _ = cv2.findContours(alpha, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not cnts: return None, "none"
     c = max(cnts, key=cv2.contourArea)
-    rect = cv2.minAreaRect(c)
-    area = cv2.contourArea(c)
-    rect_area = rect[1][0] * rect[1][1]
-    if rect_area > 0 and (area / rect_area) > 0.82:
-        hull = cv2.convexHull(c).reshape(-1, 2)
-        s, d = hull.sum(axis=1), np.diff(hull, axis=1)
-        raw_pts = np.array([hull[np.argmin(s)], hull[np.argmin(d)], hull[np.argmax(s)], hull[np.argmax(diff)] if 'diff' in locals() else hull[np.argmax(d)]], dtype="float32")
-        # Fixed coordinate ordering logic
-        s, d = hull.sum(axis=1), np.diff(hull, axis=1)
-        tl, br = hull[np.argmin(s)], hull[np.argmax(s)]
-        tr, bl = hull[np.argmin(d)], hull[np.argmax(d)]
-        ui_pts = [(int(p[0]/scale), int(p[1]/scale)) for p in [tl, tr, br, bl]]
-        return ui_pts, "rectangle"
-    return None, "irregular"
+    hull = cv2.convexHull(c).reshape(-1, 2)
+    s, d = hull.sum(axis=1), np.diff(hull, axis=1)
+    # Order: TL, TR, BR, BL
+    raw_pts = np.array([hull[np.argmin(s)], hull[np.argmin(d)], hull[np.argmax(s)], hull[np.argmax(d)]], dtype="float32")
+    return [(int(p[0]/scale), int(p[1]/scale)) for p in raw_pts], "rectangle"
 
 @st.cache_data
 def get_flattened(img_bytes, ui_pts, scale):
@@ -78,35 +69,52 @@ def get_flattened(img_bytes, ui_pts, scale):
 
 # Session State
 if 'points_map' not in st.session_state: st.session_state.points_map = {}
-if 'processed' not in st.session_state: st.session_state.processed = set()
+if 'current_index' not in st.session_state: st.session_state.current_index = 0
+if 'scanned' not in st.session_state: st.session_state.scanned = set()
 if 'last_click' not in st.session_state: st.session_state.last_click = None
 
 try:
-    # 1. FILE UPLOAD
-    uploaded_file = st.file_uploader("Upload an image to digitize", type=["jpg", "jpeg", "png"])
+    # 1. QUEUE UPLOAD
+    uploaded_files = st.file_uploader("Select images from your folder", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
+    
+    if uploaded_files:
+        num_files = len(uploaded_files)
+        st.session_state.current_index = max(0, min(st.session_state.current_index, num_files - 1))
+        
+        # 2. NAVIGATION
+        col_nav1, col_nav2, col_nav3 = st.columns([1, 1, 1])
+        with col_nav1:
+            if st.button("⬅️ Previous") and st.session_state.current_index > 0:
+                st.session_state.current_index -= 1; st.rerun()
+        with col_nav2: st.write(f"**{st.session_state.current_index + 1} / {num_files}**")
+        with col_nav3:
+            if st.button("Next ➡️") and st.session_state.current_index < num_files - 1:
+                st.session_state.current_index += 1; st.rerun()
 
-    if uploaded_file:
-        file_key = f"{uploaded_file.name}_{uploaded_file.size}"
-        file_bytes = uploaded_file.getvalue()
+        # 3. SELECT CURRENT
+        current_file = uploaded_files[st.session_state.current_index]
+        file_key = f"{current_file.name}_{current_file.size}"
+        file_bytes = current_file.getvalue()
 
-        img_raw = Image.open(io.BytesIO(file_bytes)).convert("RGB")
-        w, h = img_raw.size
+        # Fast Resize
+        img_temp = Image.open(io.BytesIO(file_bytes)).convert("RGB")
+        w, h = img_temp.size
         scale = w / 450
-        ui_img = img_raw.resize((450, int(h / scale)))
+        ui_img = img_temp.resize((450, int(h / scale)))
 
         # --- STEP 1: AI SCAN ---
-        if file_key not in st.session_state.processed:
-            st.subheader("Original Image")
+        if file_key not in st.session_state.scanned:
+            st.subheader(f"Current: {current_file.name}")
             st.image(ui_img, use_container_width=True)
             if REMBG_AVAILABLE:
                 if st.button("🚀 Start AI Auto-Digitize", use_container_width=True, type="primary"):
                     with st.spinner('Analyzing...'):
                         cutout = get_cutout(file_bytes)
                         buf = io.BytesIO(); cutout.save(buf, format="PNG")
-                        pts, shape = analyze_shape(buf.getvalue(), scale)
+                        pts, shape = analyze_and_get_pts(buf.getvalue(), scale)
                         if shape == "rectangle" and pts:
                             st.session_state.points_map[file_key] = pts
-                        st.session_state.processed.add(file_key)
+                        st.session_state.scanned.add(file_key)
                         st.rerun()
             else: st.error("AI Library unavailable.")
 
@@ -115,7 +123,7 @@ try:
             pts = st.session_state.points_map.get(file_key, [])
             if len(pts) == 4:
                 res = get_flattened(file_bytes, pts, scale)
-                st.subheader("✨ Perspective Corrected Scan")
+                st.subheader("✨ Final Scan")
             else:
                 res = get_cutout(file_bytes)
                 st.subheader("✨ Clean Cutout")
@@ -125,10 +133,10 @@ try:
             c1, c2 = st.columns(2)
             with c1:
                 buf = io.BytesIO(); res.save(buf, format="PNG")
-                st.download_button("💾 Download PNG", buf.getvalue(), f"scan_{uploaded_file.name}.png", "image/png", use_container_width=True)
+                st.download_button("💾 Download", buf.getvalue(), f"scan_{current_file.name}.png", "image/png", use_container_width=True)
             with c2:
                 if st.button("🔄 Reset Image", use_container_width=True):
-                    st.session_state.processed.discard(file_key)
+                    st.session_state.scanned.discard(file_key)
                     st.session_state.points_map.pop(file_key, None)
                     st.rerun()
 
@@ -159,8 +167,8 @@ try:
             manual_tool()
 
     else:
-        st.info("Upload an image of your artwork to begin.")
+        st.info("Select one or more images from your folder to begin.")
 
 except Exception as e:
-    st.error("🚨 An error occurred. Please refresh.")
+    st.error("🚨 Connection issue or file error. Please refresh.")
     st.code(traceback.format_exc())
