@@ -30,6 +30,12 @@ def load_canvas():
 st_canvas, CANVAS_AVAILABLE = load_canvas()
 
 # --- UTILS ---
+def get_image_base64(img):
+    """Converts PIL image to base64 for guaranteed client-side rendering."""
+    buffered = io.BytesIO()
+    img.save(buffered, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(buffered.getvalue()).decode()
+
 def order_points(pts):
     rect = np.zeros((4, 2), dtype="float32")
     s = pts.sum(axis=1)
@@ -84,12 +90,14 @@ try:
         current_file = uploaded_files[st.session_state.current_index]
         file_key = f"{current_file.name}_{current_file.size}"
 
-        # Image setup
         img_raw = Image.open(current_file).convert("RGB")
         width, height = img_raw.size
         display_width = 450
         scale_ratio = width / display_width
         ui_image = img_raw.resize((display_width, int(height / scale_ratio)))
+
+        # Pre-convert to Base64 to ensure canvas never shows black
+        ui_base64 = get_image_base64(ui_image)
 
         # Navigation
         c_nav1, c_nav2, c_nav3 = st.columns([1, 1, 1])
@@ -123,7 +131,7 @@ try:
                         st.rerun()
             else: st.error("AI Library unavailable.")
 
-        # --- STEP 2: RESULTS & ZERO-REFRESH CORRECTION ---
+        # --- STEP 2: RESULTS & CORRECTION ---
         else:
             if f"{file_key}_warp" in st.session_state.processed_images:
                 st.subheader("✨ Digitized Result")
@@ -141,31 +149,32 @@ try:
                         st.session_state.points_map[file_key] = []
                         st.rerun()
 
-            # --- THE "JAVA-MERGE" ZERO-REFRESH TOOL ---
+            # --- HARD-FIXED MANUAL TOOL ---
             st.divider()
             st.subheader("📍 Manual Corner Correction")
-            st.caption("Click 4 corners. Page will NOT refresh while you click!")
+            st.caption("Drag dots to refine. No page reloads! Redo points by clicking 'Reset' above.")
             
             if CANVAS_AVAILABLE:
-                # Pre-draw existing AI points so they are visible instantly
                 existing_pts = st.session_state.points_map.get(file_key, [])
                 initial_drawing = {"version": "4.4.0", "objects": []}
                 for i, p in enumerate(existing_pts):
                     initial_drawing["objects"].append({
-                        "type": "circle", "left": p[0]-5, "top": p[1]-5, "radius": 5, "fill": "red", "stroke": "white", "selectable": True
+                        "type": "circle", "left": p[0]-8, "top": p[1]-8, "radius": 8, 
+                        "fill": "rgba(255, 0, 0, 0.5)", "stroke": "white", "strokeWidth": 2,
+                        "selectable": True, "hasControls": False, "hasBorders": False # NO RESIZING
                     })
 
-                # update_streamlit=False is the key to zero-refresh!
                 canvas_result = st_canvas(
                     fill_color="rgba(255, 0, 0, 0.3)",
-                    background_image=ui_image,
+                    background_image=ui_image, 
+                    background_url=ui_base64, # FORCED VISIBILITY
                     update_streamlit=False, 
                     height=ui_image.height,
                     width=ui_image.width,
                     drawing_mode="point" if len(existing_pts) < 4 else "transform",
                     point_display_radius=8,
                     initial_drawing=initial_drawing if existing_pts else None,
-                    key=f"canvas_v4_{file_key}",
+                    key=f"canvas_final_{file_key}",
                 )
 
                 if st.button("🚀 Apply Manual Correction", use_container_width=True, type="primary"):
@@ -173,7 +182,7 @@ try:
                         new_pts = []
                         for obj in canvas_result.json_data["objects"]:
                             if obj["type"] == "circle":
-                                new_pts.append((int(obj["left"] + 5), int(obj["top"] + 5)))
+                                new_pts.append((int(obj["left"] + 8), int(obj["top"] + 8)))
                         
                         if len(new_pts) == 4:
                             st.session_state.points_map[file_key] = new_pts
