@@ -77,8 +77,9 @@ try:
             pts = get_current_pts(file_key)
             
             if len(pts) == 4:
-                res_img = get_flattened(file_bytes, pts, scale_ratio)
-                st.subheader("✨ Perspective Scan")
+                # This now automatically uses the mask-first approach defined in core/processing.py
+                res_img = get_flattened(file_bytes, pts, scale_ratio, masked=True)
+                st.subheader("✨ Perspective Corrected Scan")
             else:
                 res_img = get_cutout(file_bytes)
                 st.subheader("✨ Background-Removed Cutout")
