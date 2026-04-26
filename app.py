@@ -19,15 +19,6 @@ def load_rembg():
 
 rembg_remove, REMBG_AVAILABLE = load_rembg()
 
-@st.cache_resource
-def load_canvas():
-    try:
-        from streamlit_drawable_canvas import st_canvas
-        return st_canvas, True
-    except Exception: return None, False
-
-st_canvas, CANVAS_AVAILABLE = load_canvas()
-
 # --- CACHED IMAGE PROCESSING ---
 @st.cache_data
 def get_ui_image(file_bytes, display_width=450):
@@ -62,6 +53,7 @@ def four_point_transform(image, pts):
     return cv2.warpPerspective(image, M, (maxWidth, maxHeight))
 
 def find_corners_advanced(pill_image_with_alpha):
+    """Hull-based extreme corner detection (better for skewed photos)."""
     img_np = np.array(pill_image_with_alpha)
     if img_np.shape[2] < 4: return None
     alpha = img_np[:, :, 3]
@@ -69,9 +61,6 @@ def find_corners_advanced(pill_image_with_alpha):
     cnts, _ = cv2.findContours(alpha, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not cnts: return None
     c = max(cnts, key=cv2.contourArea)
-    peri = cv2.arcLength(c, True)
-    approx = cv2.approxPolyDP(c, 0.02 * peri, True)
-    if len(approx) == 4: return approx.reshape(4, 2).astype("float32")
     hull = cv2.convexHull(c).reshape(-1, 2)
     s, diff = hull.sum(axis=1), np.diff(hull, axis=1)
     return np.array([hull[np.argmin(s)], hull[np.argmin(diff)], hull[np.argmax(s)], hull[np.argmax(diff)]], dtype="float32")
@@ -91,21 +80,19 @@ try:
             st.session_state.current_index = 0
             st.rerun()
 
-        num_files = len(uploaded_files)
         current_file = uploaded_files[st.session_state.current_index]
         file_key = f"{current_file.name}_{current_file.size}"
-
         original_image, ui_image, scale_ratio = get_ui_image(current_file.getvalue())
 
         # Navigation
-        col_nav1, col_nav2, col_nav3 = st.columns([1, 1, 1])
-        with col_nav1:
+        c_nav1, c_nav2, c_nav3 = st.columns([1, 1, 1])
+        with c_nav1:
             if st.button("⬅️ Previous") and st.session_state.current_index > 0:
                 st.session_state.current_index -= 1
                 st.rerun()
-        with col_nav2: st.write(f"**{st.session_state.current_index + 1} / {num_files}**")
-        with col_nav3:
-            if st.button("Next ➡️") and st.session_state.current_index < num_files - 1:
+        with c_nav2: st.write(f"**{st.session_state.current_index + 1} / {len(uploaded_files)}**")
+        with c_nav3:
+            if st.button("Next ➡️") and st.session_state.current_index < len(uploaded_files) - 1:
                 st.session_state.current_index += 1
                 st.rerun()
 
@@ -117,7 +104,7 @@ try:
             st.image(ui_image, use_container_width=True)
             if REMBG_AVAILABLE:
                 if st.button("🚀 Start AI Auto-Digitize", use_container_width=True, type="primary"):
-                    with st.spinner('AI analyzing perspective...'):
+                    with st.spinner('Analyzing...'):
                         cleansed = rembg_remove(original_image)
                         st.session_state.processed_images[f"{file_key}_ai"] = cleansed
                         pts = find_corners_advanced(cleansed)
@@ -129,7 +116,7 @@ try:
                         st.rerun()
             else: st.error("AI Library (rembg) unavailable.")
 
-        # --- STEP 2: RESULTS & REFINEMENT ---
+        # --- STEP 2: RESULTS & STABLE CORRECTION ---
         else:
             if f"{file_key}_warp" in st.session_state.processed_images:
                 st.subheader("✨ Digitized Result")
@@ -139,48 +126,49 @@ try:
                 with c1:
                     buf = io.BytesIO()
                     st.session_state.processed_images[f"{file_key}_warp"].save(buf, format="PNG")
-                    st.download_button("💾 Download Scan", buf.getvalue(), f"scan_{current_file.name}.png", "image/png", use_container_width=True)
+                    st.download_button("💾 Download PNG", buf.getvalue(), f"scan_{current_file.name}.png", "image/png", use_container_width=True)
                 with c2:
-                    if st.button("🔄 Redo Scan", use_container_width=True):
+                    if st.button("🔄 Redo AI Scan", use_container_width=True):
                         del st.session_state.processed_images[f"{file_key}_ai"]
                         if f"{file_key}_warp" in st.session_state.processed_images: del st.session_state.processed_images[f"{file_key}_warp"]
                         st.session_state.points_map[file_key] = []
                         st.rerun()
 
-            # --- ISOLATED CORRECTION FRAGMENT (ZERO LAG) ---
-            @st.fragment
-            def correction_tool():
-                st.divider()
-                st.subheader("📍 Fine-tune Corners")
-                st.caption("Click 4 corners. Fast clicking enabled (no reloads).")
+            # --- STABLE MANUAL REFINEMENT (NO BUGGY LIBRARIES) ---
+            st.divider()
+            with st.expander("📍 Fine-tune Corners (No Refresh Mode)", expanded=False):
+                st.caption("Adjust sliders to move the corners. Watch the red dots below.")
                 
-                if CANVAS_AVAILABLE:
-                    # CLIENT-SIDE ONLY: update_streamlit=False ensures NO reruns while clicking
-                    canvas_result = st_canvas(
-                        fill_color="rgba(255, 0, 0, 0.3)",
-                        background_image=ui_image,
-                        update_streamlit=False, 
-                        height=ui_image.height,
-                        width=ui_image.width,
-                        drawing_mode="point",
-                        point_display_radius=6,
-                        key=f"canvas_static_{file_key}",
-                    )
+                pts = st.session_state.points_map.get(file_key, [(0,0), (ui_image.width,0), (ui_image.width, ui_image.height), (0, ui_image.height)])
+                if len(pts) < 4: pts = [(0,0), (ui_image.width,0), (ui_image.width, ui_image.height), (0, ui_image.height)]
+                
+                new_pts = []
+                # Fast Slider Grid
+                cols = st.columns(2)
+                labels = ["Top-Left", "Top-Right", "Bottom-Right", "Bottom-Left"]
+                for i in range(4):
+                    with cols[i % 2]:
+                        st.write(f"**{labels[i]}**")
+                        px = st.slider(f"X {i}", 0, ui_image.width, int(pts[i][0]), key=f"x_{file_key}_{i}")
+                        py = st.slider(f"Y {i}", 0, ui_image.height, int(pts[i][1]), key=f"y_{file_key}_{i}")
+                        new_pts.append((px, py))
+                
+                # Visual Feedback: Image with dots drawn on it (Instantly updated by sliders)
+                feedback_img = ui_image.copy()
+                draw = ImageDraw.Draw(feedback_img)
+                for i, p in enumerate(new_pts):
+                    draw.ellipse([p[0]-8, p[1]-8, p[0]+8, p[1]+8], fill="red", outline="white", width=2)
+                    draw.text((p[0]+12, p[1]+12), str(i+1), fill="red")
+                st.image(feedback_img, caption="Real-time adjustment preview", use_container_width=True)
 
-                    if st.button("🚀 Apply Manual Correction", use_container_width=True, type="primary"):
-                        if canvas_result.json_data and "objects" in canvas_result.json_data:
-                            new_pts = [(int(obj["left"] + 4), int(obj["top"] + 4)) for obj in canvas_result.json_data["objects"] if obj["type"] == "circle"]
-                            if len(new_pts) == 4:
-                                st.session_state.points_map[file_key] = new_pts
-                                image_cv = cv2.cvtColor(np.array(original_image), cv2.COLOR_RGB2BGR)
-                                pts_scaled = np.array(new_pts, dtype="float32") * scale_ratio 
-                                warped_cv = four_point_transform(image_cv, pts_scaled)
-                                st.session_state.processed_images[f"{file_key}_warp"] = Image.fromarray(cv2.cvtColor(warped_cv, cv2.COLOR_BGR2RGB))
-                                st.rerun()
-                            else: st.error(f"Select 4 points. (Found {len(new_pts)})")
+                if st.button("🚀 Apply These Corners", use_container_width=True, type="primary"):
+                    st.session_state.points_map[file_key] = new_pts
+                    image_cv = cv2.cvtColor(np.array(original_image), cv2.COLOR_RGB2BGR)
+                    pts_scaled = np.array(new_pts, dtype="float32") * scale_ratio 
+                    warped_cv = four_point_transform(image_cv, pts_scaled)
+                    st.session_state.processed_images[f"{file_key}_warp"] = Image.fromarray(cv2.cvtColor(warped_cv, cv2.COLOR_BGR2RGB))
+                    st.rerun()
 
-            correction_tool()
-            
             with st.expander("🖼️ View AI Mask (Cutout)"):
                 st.image(st.session_state.processed_images[f"{file_key}_ai"], use_container_width=True)
 
