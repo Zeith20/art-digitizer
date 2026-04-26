@@ -48,17 +48,20 @@ try:
             st.session_state.current_index = 0
             st.rerun()
             
-        # 2. NAVIGATION
+        # 2. NAVIGATION (Unified Single Line)
         sidebar_navigation(num_files)
         
-        c_nav1, c_nav2, c_nav3 = st.columns([1, 1, 1])
-        with c_nav1:
-            if st.button("⬅️ Previous") and st.session_state.current_index > 0:
-                st.session_state.current_index -= 1; st.rerun()
-        with c_nav2: st.write(f"**{st.session_state.current_index + 1} / {num_files}**")
-        with c_nav3:
-            if st.button("Next ➡️") and st.session_state.current_index < num_files - 1:
-                st.session_state.current_index += 1; st.rerun()
+        col_nav = st.columns([1, 1, 1])
+        with col_nav[0]:
+            if st.button("⬅️ Previous", use_container_width=True) and st.session_state.current_index > 0:
+                st.session_state.current_index -= 1
+                st.rerun()
+        with col_nav[1]:
+            st.markdown(f"<div style='text-align: center; padding-top: 10px; font-weight: bold;'>{st.session_state.current_index + 1} / {num_files}</div>", unsafe_allow_html=True)
+        with col_nav[2]:
+            if st.button("Next ➡️", use_container_width=True) and st.session_state.current_index < num_files - 1:
+                st.session_state.current_index += 1
+                st.rerun()
 
         # 3. ON-DEMAND PROCESSING (Saves Memory)
         current_file = uploaded_files[st.session_state.current_index]
