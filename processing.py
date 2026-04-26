@@ -3,7 +3,7 @@ from PIL import Image
 import numpy as np
 import cv2
 import io
-from app_src.utils.dependencies import REMBG_REMOVE, REMBG_AVAILABLE
+from dependencies import REMBG_REMOVE, REMBG_AVAILABLE
 
 @st.cache_data(max_entries=10)
 def get_cutout(img_bytes: bytes) -> Image.Image:

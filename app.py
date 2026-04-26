@@ -9,14 +9,14 @@ import traceback
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # Modular Imports
-from app_src.utils.dependencies import REMBG_AVAILABLE
-from app_src.utils.state import (
+from dependencies import REMBG_AVAILABLE
+from state import (
     initialize_session_state, mark_as_scanned, is_scanned, 
     get_current_pts, set_points
 )
-from app_src.core.processing import get_cutout, get_flattened_v2, resize_for_ui
-from app_src.core.analysis import analyze_shape_and_get_pts
-from app_src.ui.components import manual_correction_component, sidebar_navigation
+from processing import get_cutout, get_flattened_v2, resize_for_ui
+from analysis import analyze_shape_and_get_pts
+from components import manual_correction_component, sidebar_navigation
 
 # --- APP BOOTSTRAP ---
 initialize_session_state()
