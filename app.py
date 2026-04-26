@@ -3,7 +3,6 @@ from PIL import Image, ImageDraw
 import numpy as np
 import cv2
 import io
-import base64
 import traceback
 
 # --- PAGE SETUP ---
@@ -29,13 +28,16 @@ def load_canvas():
 
 st_canvas, CANVAS_AVAILABLE = load_canvas()
 
-# --- UTILS ---
-def get_image_base64(img):
-    """Converts PIL image to base64 for fast client-side rendering."""
-    buffered = io.BytesIO()
-    img.save(buffered, format="PNG")
-    return "data:image/png;base64," + base64.b64encode(buffered.getvalue()).decode()
+# --- CACHED IMAGE PROCESSING ---
+@st.cache_data
+def get_ui_image(file_bytes, display_width=450):
+    img = Image.open(io.BytesIO(file_bytes)).convert("RGB")
+    w, h = img.size
+    scale = w / display_width
+    ui_img = img.resize((display_width, int(h / scale)))
+    return img, ui_img, scale
 
+# --- UTILS ---
 def order_points(pts):
     rect = np.zeros((4, 2), dtype="float32")
     s = pts.sum(axis=1)
@@ -93,11 +95,7 @@ try:
         current_file = uploaded_files[st.session_state.current_index]
         file_key = f"{current_file.name}_{current_file.size}"
 
-        original_image = Image.open(current_file).convert("RGB")
-        width, height = original_image.size
-        display_width = 450
-        scale_ratio = width / display_width
-        ui_image = original_image.resize((display_width, int(height / scale_ratio)))
+        original_image, ui_image, scale_ratio = get_ui_image(current_file.getvalue())
 
         # Navigation
         col_nav1, col_nav2, col_nav3 = st.columns([1, 1, 1])
@@ -141,7 +139,7 @@ try:
                 with c1:
                     buf = io.BytesIO()
                     st.session_state.processed_images[f"{file_key}_warp"].save(buf, format="PNG")
-                    st.download_button("💾 Download PNG", buf.getvalue(), f"scan_{current_file.name}.png", "image/png", use_container_width=True)
+                    st.download_button("💾 Download Scan", buf.getvalue(), f"scan_{current_file.name}.png", "image/png", use_container_width=True)
                 with c2:
                     if st.button("🔄 Redo Scan", use_container_width=True):
                         del st.session_state.processed_images[f"{file_key}_ai"]
@@ -149,49 +147,39 @@ try:
                         st.session_state.points_map[file_key] = []
                         st.rerun()
 
-            # --- STATIC MANUAL CORRECTION (NO REFRESH) ---
-            st.divider()
-            st.subheader("📍 Fine-tune Corners")
-            st.caption("Click 4 corners. No page reloads! You can also drag existing points.")
-            
-            if CANVAS_AVAILABLE:
-                # Prepare initial drawing from state
-                existing_pts = st.session_state.points_map.get(file_key, [])
-                initial_drawing = {"version": "4.4.0", "objects": []}
-                for p in existing_pts:
-                    initial_drawing["objects"].append({
-                        "type": "circle", "left": p[0] - 4, "top": p[1] - 4, "radius": 4,
-                        "fill": "red", "stroke": "white", "strokeWidth": 2, "selectable": True, "hasControls": False,
-                    })
+            # --- ISOLATED CORRECTION FRAGMENT (ZERO LAG) ---
+            @st.fragment
+            def correction_tool():
+                st.divider()
+                st.subheader("📍 Fine-tune Corners")
+                st.caption("Click 4 corners. Fast clicking enabled (no reloads).")
+                
+                if CANVAS_AVAILABLE:
+                    # CLIENT-SIDE ONLY: update_streamlit=False ensures NO reruns while clicking
+                    canvas_result = st_canvas(
+                        fill_color="rgba(255, 0, 0, 0.3)",
+                        background_image=ui_image,
+                        update_streamlit=False, 
+                        height=ui_image.height,
+                        width=ui_image.width,
+                        drawing_mode="point",
+                        point_display_radius=6,
+                        key=f"canvas_static_{file_key}",
+                    )
 
-                # Client-side canvas logic
-                canvas_result = st_canvas(
-                    fill_color="rgba(255, 0, 0, 0.3)",
-                    background_image=ui_image, # Streamlit handles PIL->URL conversion internally usually, but Base64 is safer if needed
-                    update_streamlit=False, # THIS PREVENTS REFRESH ON EVERY CLICK
-                    height=ui_image.height,
-                    width=ui_image.width,
-                    drawing_mode="point" if len(existing_pts) < 4 else "transform",
-                    point_display_radius=6,
-                    initial_drawing=initial_drawing if existing_pts else None,
-                    key=f"canvas_{file_key}",
-                )
+                    if st.button("🚀 Apply Manual Correction", use_container_width=True, type="primary"):
+                        if canvas_result.json_data and "objects" in canvas_result.json_data:
+                            new_pts = [(int(obj["left"] + 4), int(obj["top"] + 4)) for obj in canvas_result.json_data["objects"] if obj["type"] == "circle"]
+                            if len(new_pts) == 4:
+                                st.session_state.points_map[file_key] = new_pts
+                                image_cv = cv2.cvtColor(np.array(original_image), cv2.COLOR_RGB2BGR)
+                                pts_scaled = np.array(new_pts, dtype="float32") * scale_ratio 
+                                warped_cv = four_point_transform(image_cv, pts_scaled)
+                                st.session_state.processed_images[f"{file_key}_warp"] = Image.fromarray(cv2.cvtColor(warped_cv, cv2.COLOR_BGR2RGB))
+                                st.rerun()
+                            else: st.error(f"Select 4 points. (Found {len(new_pts)})")
 
-                if st.button("🚀 Apply Manual Correction", use_container_width=True, type="primary"):
-                    if canvas_result.json_data and "objects" in canvas_result.json_data:
-                        new_pts = []
-                        for obj in canvas_result.json_data["objects"]:
-                            if obj["type"] == "circle":
-                                new_pts.append((int(obj["left"] + 4), int(obj["top"] + 4)))
-                        
-                        if len(new_pts) == 4:
-                            st.session_state.points_map[file_key] = new_pts
-                            image_cv = cv2.cvtColor(np.array(original_image), cv2.COLOR_RGB2BGR)
-                            pts_scaled = np.array(new_pts, dtype="float32") * scale_ratio 
-                            warped_cv = four_point_transform(image_cv, pts_scaled)
-                            st.session_state.processed_images[f"{file_key}_warp"] = Image.fromarray(cv2.cvtColor(warped_cv, cv2.COLOR_BGR2RGB))
-                            st.rerun()
-                        else: st.error(f"Please select exactly 4 points. You currently have {len(new_pts)}.")
+            correction_tool()
             
             with st.expander("🖼️ View AI Mask (Cutout)"):
                 st.image(st.session_state.processed_images[f"{file_key}_ai"], use_container_width=True)
