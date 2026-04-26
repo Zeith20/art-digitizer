@@ -15,7 +15,7 @@ def get_cutout(img_bytes: bytes) -> Image.Image:
     return img.convert("RGBA")
 
 @st.cache_data(max_entries=10)
-def get_flattened(img_bytes: bytes, ui_pts: list, scale: float, masked: bool = True) -> Image.Image:
+def get_flattened_v2(img_bytes: bytes, ui_pts: list, scale: float, masked: bool = True) -> Image.Image:
     """
     Applies four-point perspective transform.
     If masked=True, it applies background removal first to prevent background bleed.

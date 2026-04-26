@@ -9,7 +9,7 @@ from src.utils.state import (
     initialize_session_state, mark_as_scanned, is_scanned, 
     get_current_pts, set_points
 )
-from src.core.processing import get_cutout, get_flattened, resize_for_ui
+from src.core.processing import get_cutout, get_flattened_v2, resize_for_ui
 from src.core.analysis import analyze_shape_and_get_pts
 from src.ui.components import manual_correction_component, sidebar_navigation
 
@@ -78,7 +78,7 @@ try:
             
             if len(pts) == 4:
                 # This now automatically uses the mask-first approach defined in core/processing.py
-                res_img = get_flattened(file_bytes, pts, scale_ratio, masked=True)
+                res_img = get_flattened_v2(file_bytes, pts, scale_ratio, masked=True)
                 st.subheader("✨ Perspective Corrected Scan")
             else:
                 res_img = get_cutout(file_bytes)
