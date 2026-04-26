@@ -5,7 +5,7 @@ import os
 from PIL import Image
 import traceback
 
-# Optimized search path for modular architecture
+# Optimized search path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # Modular Imports
@@ -23,17 +23,27 @@ initialize_session_state()
 st.set_page_config(page_title="Art Digitizer Pro", layout="centered")
 st.title("🎨 Smart Art Digitizer")
 
+# --- GLOBAL MEMORY RECOVERY ---
+with st.sidebar:
+    st.header("Admin & Recovery")
+    if st.button("🚨 EMERGENCY RESET (Clear All Cache)", use_container_width=True, type="primary"):
+        st.cache_data.clear()
+        st.session_state.scanned_files = set()
+        st.session_state.points_map = {}
+        st.session_state.current_index = 0
+        st.success("Cache cleared! Please refresh your browser.")
+        st.rerun()
+
 try:
     # 1. LIGHTWEIGHT FILE UPLOAD (Max 200 files)
     uploaded_files = st.file_uploader(
-        "Select your folder images", 
+        "Upload artworks from your folder", 
         type=["jpg", "jpeg", "png"], 
         accept_multiple_files=True
     )
     
     if uploaded_files:
         num_files = len(uploaded_files)
-        # Safe selection logic
         st.session_state.current_index = max(0, min(st.session_state.current_index, num_files - 1))
         
         # NAVIGATION
@@ -44,7 +54,7 @@ try:
             if st.button("⬅️ Previous") and st.session_state.current_index > 0:
                 st.session_state.current_index -= 1; st.rerun()
         with c_nav2: st.write(f"**{st.session_state.current_index + 1} / {num_files}**")
-        with c_nav3:
+        with col_nav3 if 'col_nav3' in locals() else c_nav3:
             if st.button("Next ➡️") and st.session_state.current_index < num_files - 1:
                 st.session_state.current_index += 1; st.rerun()
 
@@ -63,7 +73,7 @@ try:
             st.image(ui_img, use_container_width=True)
             if REMBG_AVAILABLE:
                 if st.button("🚀 Start AI Auto-Digitize", use_container_width=True, type="primary"):
-                    with st.spinner('Analyzing shape...'):
+                    with st.spinner('Analyzing...'):
                         cutout = get_cutout(file_bytes)
                         # Analysis buffer
                         buf = io.BytesIO(); cutout.save(buf, format="PNG")
@@ -102,8 +112,8 @@ try:
             with st.expander("🖼️ View Original AI Mask"):
                 st.image(get_cutout(file_bytes), use_container_width=True)
 
-    else: st.info("Select images from your folder (up to 200 files supported).")
+    else: st.info("Select images from your folder.")
 
 except Exception as e:
-    st.error("🚨 Processing Error. Please try refreshing or uploading fewer files.")
+    st.error("🚨 Application Error. Please use the EMERGENCY RESET in the sidebar.")
     st.code(traceback.format_exc())
