@@ -1,7 +1,7 @@
 import streamlit as st
 from PIL import Image, ImageDraw
 from dependencies import IMAGE_COORDS_TOOL, IMAGE_COORDS_AVAILABLE
-from from state import get_current_pts, set_points
+from state import get_current_pts, set_points
 
 @st.fragment
 def manual_correction_component(file_key, ui_image):
@@ -55,6 +55,6 @@ def sidebar_navigation(num_files):
         
         st.divider()
         st.caption("Admin")
-        from from state import reset_all_progress
+        from state import reset_all_progress
         if st.button("🗑️ Reset All Progress", use_container_width=True):
             reset_all_progress()
