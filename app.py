@@ -75,6 +75,7 @@ def find_corners_advanced(pill_image_with_alpha):
 if 'points_map' not in st.session_state: st.session_state.points_map = {}
 if 'current_index' not in st.session_state: st.session_state.current_index = 0
 if 'processed_images' not in st.session_state: st.session_state.processed_images = {}
+if 'canvas_key' not in st.session_state: st.session_state.canvas_key = 0
 
 try:
     uploaded_files = st.file_uploader("Upload drawings", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
@@ -95,8 +96,6 @@ try:
         display_width = 450
         scale_ratio = width / display_width
         ui_image = img_raw.resize((display_width, int(height / scale_ratio)))
-
-        # Pre-convert to Base64 to ensure canvas never shows black
         ui_base64 = get_image_base64(ui_image)
 
         # Navigation
@@ -104,11 +103,13 @@ try:
         with c_nav1:
             if st.button("⬅️ Previous") and st.session_state.current_index > 0:
                 st.session_state.current_index -= 1
+                st.session_state.canvas_key += 1
                 st.rerun()
         with c_nav2: st.write(f"**{st.session_state.current_index + 1} / {len(uploaded_files)}**")
         with c_nav3:
             if st.button("Next ➡️") and st.session_state.current_index < len(uploaded_files) - 1:
                 st.session_state.current_index += 1
+                st.session_state.canvas_key += 1
                 st.rerun()
 
         has_scanned = f"{file_key}_ai" in st.session_state.processed_images
@@ -147,34 +148,34 @@ try:
                         del st.session_state.processed_images[f"{file_key}_ai"]
                         if f"{file_key}_warp" in st.session_state.processed_images: del st.session_state.processed_images[f"{file_key}_warp"]
                         st.session_state.points_map[file_key] = []
+                        st.session_state.canvas_key += 1
                         st.rerun()
 
             # --- HARD-FIXED MANUAL TOOL ---
             st.divider()
             st.subheader("📍 Manual Corner Correction")
-            st.caption("Drag dots to refine. No page reloads! Redo points by clicking 'Reset' above.")
+            st.caption("Drag dots to refine. No page reloads! Redo points by clicking 'Redo Scan' above.")
             
             if CANVAS_AVAILABLE:
                 existing_pts = st.session_state.points_map.get(file_key, [])
                 initial_drawing = {"version": "4.4.0", "objects": []}
                 for i, p in enumerate(existing_pts):
                     initial_drawing["objects"].append({
-                        "type": "circle", "left": p[0]-8, "top": p[1]-8, "radius": 8, 
-                        "fill": "rgba(255, 0, 0, 0.5)", "stroke": "white", "strokeWidth": 2,
-                        "selectable": True, "hasControls": False, "hasBorders": False # NO RESIZING
+                        "type": "circle", "left": p[0]-10, "top": p[1]-10, "radius": 10, 
+                        "fill": "rgba(255, 0, 0, 0.5)", "stroke": "white", "strokeWidth": 3,
+                        "selectable": True, "hasControls": False, "hasBorders": False,
+                        "lockScalingX": True, "lockScalingY": True, "lockRotation": True
                     })
 
                 canvas_result = st_canvas(
-                    fill_color="rgba(255, 0, 0, 0.3)",
-                    background_image=ui_image, 
-                    background_url=ui_base64, # FORCED VISIBILITY
+                    background_url=ui_base64, # ONLY BASE64 TO PREVENT BLACK SCREEN
                     update_streamlit=False, 
                     height=ui_image.height,
                     width=ui_image.width,
                     drawing_mode="point" if len(existing_pts) < 4 else "transform",
-                    point_display_radius=8,
+                    point_display_radius=10,
                     initial_drawing=initial_drawing if existing_pts else None,
-                    key=f"canvas_final_{file_key}",
+                    key=f"canvas_v9_{file_key}_{st.session_state.canvas_key}",
                 )
 
                 if st.button("🚀 Apply Manual Correction", use_container_width=True, type="primary"):
@@ -182,7 +183,7 @@ try:
                         new_pts = []
                         for obj in canvas_result.json_data["objects"]:
                             if obj["type"] == "circle":
-                                new_pts.append((int(obj["left"] + 8), int(obj["top"] + 8)))
+                                new_pts.append((int(obj["left"] + 10), int(obj["top"] + 10)))
                         
                         if len(new_pts) == 4:
                             st.session_state.points_map[file_key] = new_pts
