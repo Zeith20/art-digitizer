@@ -1,92 +1,37 @@
 import streamlit as st
-from PIL import Image, ImageDraw
-import numpy as np
-import cv2
 import io
+from PIL import Image
 import traceback
 
-# --- PAGE SETUP ---
-st.set_page_config(page_title="Art Digitizer", layout="centered")
+# Modular Imports
+from src.utils.dependencies import REMBG_AVAILABLE
+from src.utils.state import (
+    initialize_session_state, mark_as_scanned, is_scanned, 
+    get_current_pts, set_points
+)
+from src.core.processing import get_cutout, get_flattened, resize_for_ui
+from src.core.analysis import analyze_shape_and_get_pts
+from src.ui.components import manual_correction_component, sidebar_navigation
+
+# --- APP BOOTSTRAP ---
+initialize_session_state()
+st.set_page_config(page_title="Art Digitizer Pro", layout="centered")
 st.title("🎨 Smart Art Digitizer")
 
-# --- OPTIONAL DEPENDENCIES ---
-@st.cache_resource
-def load_rembg():
-    try:
-        from rembg import remove
-        return remove, True
-    except Exception: return None, False
-
-rembg_remove, REMBG_AVAILABLE = load_rembg()
-
-@st.cache_resource
-def load_coords():
-    try:
-        from streamlit_image_coordinates import streamlit_image_coordinates
-        return streamlit_image_coordinates, True
-    except Exception: return None, False
-
-streamlit_image_coordinates, IMAGE_COORDS_AVAILABLE = load_coords()
-
-# --- HIGH-CAPACITY CACHED ENGINES ---
-@st.cache_data(max_entries=10) # Auto-cleans old data to save memory
-def get_cutout(img_bytes):
-    img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-    return rembg_remove(img) if REMBG_AVAILABLE else img
-
-@st.cache_data(max_entries=10)
-def analyze_and_get_pts(cutout_bytes, scale):
-    img_np = np.array(Image.open(io.BytesIO(cutout_bytes)))
-    if img_np.shape[2] < 4: return None, "none"
-    alpha = img_np[:, :, 3]
-    _, alpha = cv2.threshold(alpha, 10, 255, cv2.THRESH_BINARY)
-    cnts, _ = cv2.findContours(alpha, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not cnts: return None, "none"
-    c = max(cnts, key=cv2.contourArea)
-    hull = cv2.convexHull(c).reshape(-1, 2)
-    s, d = hull.sum(axis=1), np.diff(hull, axis=1)
-    raw_pts = np.array([hull[np.argmin(s)], hull[np.argmin(d)], hull[np.argmax(s)], hull[np.argmax(d)]], dtype="float32")
-    return [(int(p[0]/scale), int(p[1]/scale)) for p in raw_pts], "rectangle"
-
-@st.cache_data(max_entries=10)
-def get_flattened(img_bytes, ui_pts, scale):
-    img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-    image_cv = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
-    pts_scaled = np.array(ui_pts, dtype="float32") * scale
-    rect = np.zeros((4, 2), dtype="float32")
-    s, d = pts_scaled.sum(axis=1), np.diff(pts_scaled, axis=1)
-    rect[0], rect[2] = pts_scaled[np.argmin(s)], pts_scaled[np.argmax(s)]
-    rect[1], rect[3] = pts_scaled[np.argmin(d)], pts_scaled[np.argmax(d)]
-    (tl, tr, br, bl) = rect
-    w = max(int(np.linalg.norm(br-bl)), int(np.linalg.norm(tr-tl)))
-    h = max(int(np.linalg.norm(tr-br)), int(np.linalg.norm(tl-bl)))
-    dst = np.array([[0,0], [w-1,0], [w-1,h-1], [0,h-1]], dtype="float32")
-    M = cv2.getPerspectiveTransform(rect, dst)
-    warped = cv2.warpPerspective(image_cv, M, (w, h))
-    return Image.fromarray(cv2.cvtColor(warped, cv2.COLOR_BGR2RGB))
-
-# Lightweight Session State
-if 'points_map' not in st.session_state: st.session_state.points_map = {}
-if 'current_index' not in st.session_state: st.session_state.current_index = 0
-if 'scanned' not in st.session_state: st.session_state.scanned = set()
-if 'last_click' not in st.session_state: st.session_state.last_click = None
-
 try:
-    # 1. STREAMING UPLOADER (Max 200 files)
-    uploaded_files = st.file_uploader("Select your folder images", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
+    # 1. FILE UPLOAD (Streaming Batch Support)
+    uploaded_files = st.file_uploader(
+        "Upload artworks from your folder", 
+        type=["jpg", "jpeg", "png"], 
+        accept_multiple_files=True
+    )
     
     if uploaded_files:
         num_files = len(uploaded_files)
-        st.session_state.current_index = max(0, min(st.session_state.current_index, num_files - 1))
         
-        # 2. LIGHTWEIGHT NAVIGATION
-        with st.sidebar:
-            st.header("Folder Processing")
-            st.info(f"Loaded {num_files} images.")
-            st.session_state.current_index = st.number_input("Current Image", 1, num_files, st.session_state.current_index + 1) - 1
-            if st.button("🗑️ Reset Process"):
-                st.session_state.scanned = set(); st.session_state.points_map = {}; st.rerun()
-
+        # Sidebar & Top Navigation
+        sidebar_navigation(num_files)
+        
         col_nav1, col_nav2, col_nav3 = st.columns([1, 1, 1])
         with col_nav1:
             if st.button("⬅️ Previous") and st.session_state.current_index > 0:
@@ -96,85 +41,69 @@ try:
             if st.button("Next ➡️") and st.session_state.current_index < num_files - 1:
                 st.session_state.current_index += 1; st.rerun()
 
-        # 3. LAZY LOADING
+        # Load Active File
         current_file = uploaded_files[st.session_state.current_index]
         file_key = f"{current_file.name}_{current_file.size}"
+        file_bytes = current_file.getvalue()
         
-        # Process ONLY when needed
-        img_raw = Image.open(current_file).convert("RGB")
-        w, h = img_raw.size
-        scale = w / 450
-        ui_img = img_raw.resize((450, int(h / scale)))
+        # UI Pre-processing
+        img_raw = Image.open(io.BytesIO(file_bytes)).convert("RGB")
+        ui_img, scale_ratio = resize_for_ui(img_raw)
 
-        # --- STEP 1: AI SCAN ---
-        if file_key not in st.session_state.scanned:
+        # --- STEP 1: AI SCAN PIPELINE ---
+        if not is_scanned(file_key):
             st.subheader(f"📄 {current_file.name}")
             st.image(ui_img, use_container_width=True)
+            
             if REMBG_AVAILABLE:
                 if st.button("🚀 Start AI Auto-Digitize", use_container_width=True, type="primary"):
-                    with st.spinner('Analyzing...'):
-                        file_bytes = current_file.getvalue()
+                    with st.spinner('Analyzing perspective...'):
+                        # Background Removal
                         cutout = get_cutout(file_bytes)
                         buf = io.BytesIO(); cutout.save(buf, format="PNG")
-                        pts, shape = analyze_and_get_pts(buf.getvalue(), scale)
+                        
+                        # Shape Analysis
+                        pts, shape = analyze_shape_and_get_pts(buf.getvalue(), scale_ratio)
                         if shape == "rectangle" and pts:
-                            st.session_state.points_map[file_key] = pts
-                        st.session_state.scanned.add(file_key)
+                            set_points(file_key, pts)
+                        
+                        mark_as_scanned(file_key)
                         st.rerun()
-            else: st.error("AI Library unavailable.")
-
-        # --- STEP 2: RESULTS ---
-        else:
-            pts = st.session_state.points_map.get(file_key, [])
-            file_bytes = current_file.getvalue()
-            if len(pts) == 4:
-                res = get_flattened(file_bytes, pts, scale)
-                st.subheader("✨ Digitized Scan")
             else:
-                res = get_cutout(file_bytes)
-                st.subheader("✨ Clean Cutout")
+                st.error("AI Library (rembg) unavailable.")
+
+        # --- STEP 2: RESULTS & REFINEMENT ---
+        else:
+            pts = get_current_pts(file_key)
             
-            st.image(res, use_container_width=True)
+            if len(pts) == 4:
+                res_img = get_flattened(file_bytes, pts, scale_ratio)
+                st.subheader("✨ Perspective Scan")
+            else:
+                res_img = get_cutout(file_bytes)
+                st.subheader("✨ Background-Removed Cutout")
             
-            c1, c2 = st.columns(2)
-            with c1:
-                buf = io.BytesIO(); res.save(buf, format="PNG")
-                st.download_button("💾 Download", buf.getvalue(), f"scan_{current_file.name}.png", "image/png", use_container_width=True)
-            with c2:
+            st.image(res_img, use_container_width=True)
+            
+            c_res1, c_res2 = st.columns(2)
+            with c_res1:
+                buf = io.BytesIO(); res_img.save(buf, format="PNG")
+                st.download_button("💾 Download", buf.getvalue(), f"digitized_{current_file.name}.png", "image/png", use_container_width=True)
+            with c_res2:
                 if st.button("🔄 Reset This Image", use_container_width=True):
-                    st.session_state.scanned.discard(file_key)
+                    st.session_state.scanned_files.discard(file_key)
                     st.session_state.points_map.pop(file_key, None)
                     st.rerun()
 
-            # --- STEP 3: MANUAL FIX ---
-            @st.fragment
-            def manual_tool():
-                st.divider()
-                with st.expander("📍 Fine-tune Corners"):
-                    cur_pts = st.session_state.points_map.get(file_key, [])
-                    tmp = ui_img.copy(); draw = ImageDraw.Draw(tmp)
-                    for i, p in enumerate(cur_pts):
-                        draw.ellipse([p[0]-6, p[1]-6, p[0]+6, p[1]+6], fill="red", outline="white", width=2)
-                    
-                    val = streamlit_image_coordinates(tmp, key=f"coord_{file_key}")
-                    if val:
-                        clk = (int(val["x"]), int(val["y"]))
-                        if clk != st.session_state.last_click:
-                            st.session_state.last_click = clk
-                            if len(cur_pts) < 4:
-                                if file_key not in st.session_state.points_map: st.session_state.points_map[file_key] = []
-                                st.session_state.points_map[file_key].append(clk)
-                            else:
-                                st.session_state.points_map[file_key] = [clk]
-                            st.rerun()
-                    if len(cur_pts) == 4:
-                        if st.button("🚀 Apply Manual Points", use_container_width=True, type="primary"):
-                            st.rerun()
-            manual_tool()
+            # Manual correction component (fragmented)
+            manual_correction_component(file_key, ui_img)
+            
+            with st.expander("🖼️ View Original AI Mask"):
+                st.image(get_cutout(file_bytes), use_container_width=True)
 
     else:
-        st.info("Select images from your folder (up to 200 files supported).")
+        st.info("Select images from your folder to begin processing.")
 
 except Exception as e:
-    st.error("🚨 Connection issue. Please refresh.")
+    st.error("🚨 An application error occurred.")
     st.code(traceback.format_exc())
