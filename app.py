@@ -14,14 +14,11 @@ if 'points_map' not in st.session_state: st.session_state.points_map = {}
 if 'current_index' not in st.session_state: st.session_state.current_index = 0
 if 'processed_images' not in st.session_state: st.session_state.processed_images = {}
 if 'last_click' not in st.session_state: st.session_state.last_click = None
-if 'persisted_files' not in st.session_state: st.session_state.persisted_files = []
-if 'last_upload_id' not in st.session_state: st.session_state.last_upload_id = ""
 
-# --- SIDEBAR CONTROLS ---
+# --- SIDEBAR ---
 with st.sidebar:
     st.header("Batch Controls")
-    if st.button("🗑️ Clear All Uploads", use_container_width=True):
-        st.session_state.persisted_files = []
+    if st.button("🗑️ Clear App Memory", use_container_width=True):
         st.session_state.processed_images = {}
         st.session_state.points_map = {}
         st.session_state.current_index = 0
@@ -83,21 +80,15 @@ def analyze_shape_and_get_corners(pill_image_with_alpha):
     return np.array([hull[np.argmin(s)], hull[np.argmin(diff)], hull[np.argmax(s)], hull[np.argmax(diff)]], dtype="float32"), "rectangle"
 
 try:
-    # 1. FILE UPLOAD (Limited rerun logic)
+    # 1. FILE UPLOAD
     uploaded_files = st.file_uploader("Upload drawings", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
     
     if uploaded_files:
-        current_id = "-".join([f"{f.name}_{f.size}" for f in uploaded_files])
-        if st.session_state.last_upload_id != current_id:
-            st.session_state.persisted_files = uploaded_files
-            st.session_state.last_upload_id = current_id
-            st.session_state.current_index = 0
-
-    if st.session_state.persisted_files:
-        num_files = len(st.session_state.persisted_files)
+        num_files = len(uploaded_files)
+        # Safe index adjustment
         st.session_state.current_index = max(0, min(st.session_state.current_index, num_files - 1))
         
-        current_file = st.session_state.persisted_files[st.session_state.current_index]
+        current_file = uploaded_files[st.session_state.current_index]
         file_key = f"{current_file.name}_{current_file.size}"
 
         # 2. NAVIGATION
@@ -112,18 +103,12 @@ try:
                 st.session_state.current_index += 1
                 st.rerun()
 
-        # 3. LAZY IMAGE LOAD
-        if f"img_{file_key}" not in st.session_state:
-            img = Image.open(current_file).convert("RGB")
-            st.session_state[f"img_{file_key}"] = img
-            w, h = img.size
-            scale = w / 450
-            st.session_state[f"ui_{file_key}"] = img.resize((450, int(h / scale)))
-            st.session_state[f"scale_{file_key}"] = scale
-
-        original_image = st.session_state[f"img_{file_key}"]
-        ui_image = st.session_state[f"ui_{file_key}"]
-        scale_ratio = st.session_state[f"scale_{file_key}"]
+        # 3. FAST LOAD
+        img_raw = Image.open(current_file).convert("RGB")
+        width, height = img_raw.size
+        display_width = 450
+        scale_ratio = width / display_width
+        ui_image = img_raw.resize((display_width, int(height / scale_ratio)))
 
         has_scanned = f"{file_key}_ai" in st.session_state.processed_images
 
@@ -133,12 +118,12 @@ try:
             if REMBG_AVAILABLE:
                 if st.button("🚀 Start AI Auto-Digitize", use_container_width=True, type="primary"):
                     with st.spinner('Analyzing...'):
-                        cleansed = rembg_remove(original_image)
+                        cleansed = rembg_remove(img_raw)
                         st.session_state.processed_images[f"{file_key}_ai"] = cleansed
                         pts, _ = analyze_shape_and_get_corners(cleansed)
                         if pts is not None:
                             st.session_state.points_map[file_key] = [(int(p[0] / scale_ratio), int(p[1] / scale_ratio)) for p in pts]
-                            image_cv = cv2.cvtColor(np.array(original_image), cv2.COLOR_RGB2BGR)
+                            image_cv = cv2.cvtColor(np.array(img_raw), cv2.COLOR_RGB2BGR)
                             warped_cv = four_point_transform(image_cv, pts)
                             st.session_state.processed_images[f"{file_key}_result"] = Image.fromarray(cv2.cvtColor(warped_cv, cv2.COLOR_BGR2RGB))
                         else:
@@ -181,14 +166,15 @@ try:
                             if click != st.session_state.last_click:
                                 st.session_state.last_click = click
                                 if len(pts) < 4:
+                                    if file_key not in st.session_state.points_map: st.session_state.points_map[file_key] = []
                                     st.session_state.points_map[file_key].append(click)
                                 else:
                                     st.session_state.points_map[file_key] = [click]
                                 st.rerun()
 
                     if len(st.session_state.points_map.get(file_key, [])) == 4:
-                        if st.button("🚀 Apply Manual Perspective", use_container_width=True, type="primary"):
-                            image_cv = cv2.cvtColor(np.array(original_image), cv2.COLOR_RGB2BGR)
+                        if st.button("🚀 Apply Manual Corners", use_container_width=True, type="primary"):
+                            image_cv = cv2.cvtColor(np.array(img_raw), cv2.COLOR_RGB2BGR)
                             pts_scaled = np.array(st.session_state.points_map[file_key], dtype="float32") * scale_ratio 
                             warped_cv = four_point_transform(image_cv, pts_scaled)
                             st.session_state.processed_images[f"{file_key}_result"] = Image.fromarray(cv2.cvtColor(warped_cv, cv2.COLOR_BGR2RGB))
@@ -198,5 +184,5 @@ try:
     else: st.info("Upload images to begin.")
 
 except Exception as e:
-    st.error("🚨 Connection Error!")
+    st.error("🚨 Connection Issue! Please clear memory in sidebar and retry.")
     st.code(traceback.format_exc())
