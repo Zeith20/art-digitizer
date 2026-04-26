@@ -84,6 +84,7 @@ def find_corners_advanced(pill_image_with_alpha):
 if 'points_map' not in st.session_state: st.session_state.points_map = {}
 if 'current_index' not in st.session_state: st.session_state.current_index = 0
 if 'processed_images' not in st.session_state: st.session_state.processed_images = {}
+if 'last_click' not in st.session_state: st.session_state.last_click = None
 
 try:
     uploaded_files = st.file_uploader("Upload drawings", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
@@ -161,38 +162,36 @@ try:
             def manual_correction_fragment():
                 st.divider()
                 st.subheader("📍 Fine-tune Corners")
-                st.caption("Click 4 corners to fix detection. This area updates instantly without page reload.")
+                st.caption("Click 4 corners to fix detection. Updates instantly.")
                 
-                # Fetch local copy of points
                 pts = st.session_state.points_map.get(file_key, [])
                 
                 if IMAGE_COORDS_AVAILABLE:
-                    # Draw current points on image
                     temp_ui = ui_image.copy()
                     draw = ImageDraw.Draw(temp_ui)
                     for i, p in enumerate(pts):
                         draw.ellipse([p[0]-6, p[1]-6, p[0]+6, p[1]+6], fill="red", outline="white", width=2)
                         draw.text((p[0]+10, p[1]+10), str(i+1), fill="red")
                     
-                    # Capture Click
                     value = streamlit_image_coordinates(temp_ui, key=f"coords_{file_key}")
                     
                     if value:
-                        new_p = (int(value["x"]), int(value["y"]))
-                        # Filter accidental double-clicks
-                        if not pts or np.linalg.norm(np.array(new_p) - np.array(pts[-1])) > 10:
+                        click_coord = (int(value["x"]), int(value["y"]))
+                        # Check if this is a NEW click to avoid lag/loop
+                        if click_coord != st.session_state.last_click:
+                            st.session_state.last_click = click_coord
                             if len(pts) < 4:
-                                st.session_state.points_map[file_key].append(new_p)
+                                if file_key not in st.session_state.points_map: st.session_state.points_map[file_key] = []
+                                st.session_state.points_map[file_key].append(click_coord)
                             else:
-                                st.session_state.points_map[file_key] = [new_p]
-                            # IMPORTANT: No st.rerun() here. 
-                            # The fragment automatically reruns when 'value' changes.
+                                st.session_state.points_map[file_key] = [click_coord]
+                            # Force rerun to show the dot immediately
+                            st.rerun()
                 
                 col_manual1, col_manual2 = st.columns(2)
                 with col_manual1:
                     if st.button("🚀 Apply Manual Corners", use_container_width=True, type="primary"):
                         if len(st.session_state.points_map.get(file_key, [])) == 4:
-                            # This button triggers a full rerun to update the main result image
                             image_cv = cv2.cvtColor(np.array(original_image), cv2.COLOR_RGB2BGR)
                             pts_scaled = np.array(st.session_state.points_map[file_key], dtype="float32") * scale_ratio 
                             warped_cv = four_point_transform(image_cv, pts_scaled)
@@ -205,7 +204,6 @@ try:
                         st.session_state.points_map[file_key] = []
                         st.rerun()
 
-            # Execute the isolated fragment
             manual_correction_fragment()
             
             with st.expander("🖼️ View AI Mask (Cutout)"):
