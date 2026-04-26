@@ -5,6 +5,7 @@ import cv2
 import io
 import traceback
 
+# Optimized UX: 2026-04-25 10:45
 # --- PAGE SETUP ---
 st.set_page_config(page_title="Art Digitizer", layout="centered")
 st.title("🎨 Smart Art Digitizer")
@@ -13,9 +14,10 @@ st.title("🎨 Smart Art Digitizer")
 st.markdown("""
 <style>
     /* Stop images from fading in/out on refresh */
-    .stImage img {
+    [data-testid="stImage"] img {
         animation: none !important;
         transition: none !important;
+        opacity: 1 !important;
     }
     /* Reduce padding to keep layout stable */
     .block-container {
@@ -120,7 +122,7 @@ try:
                 st.session_state.current_index -= 1
                 st.rerun()
         with c_nav2: st.write(f"**{st.session_state.current_index + 1} / {num_files}**")
-        with c_nav3:
+        with col_nav3 if 'col_nav3' in locals() else c_nav3:
             if st.button("Next ➡️") and st.session_state.current_index < num_files - 1:
                 st.session_state.current_index += 1
                 st.rerun()
@@ -168,7 +170,7 @@ try:
             def manual_tool():
                 st.divider()
                 st.subheader("📍 Fine-tune Corners")
-                st.caption("Click 4 corners. No fade-out animations! Updates instantly.")
+                st.caption("Click 4 corners. Fast clicking enabled (no reload delay).")
                 
                 pts = st.session_state.points_map.get(file_key, [])
                 
@@ -189,15 +191,15 @@ try:
                                 st.session_state.points_map[file_key].append(click)
                             else:
                                 st.session_state.points_map[file_key] = [click]
-                            st.rerun() # targeted rerun (flicker-free due to CSS)
+                            st.rerun() # targeted rerun (fast due to CSS)
 
                 if len(st.session_state.points_map.get(file_key, [])) == 4:
-                    if st.button("🚀 Re-Apply with these corners", use_container_width=True, type="primary"):
+                    if st.button("🚀 Re-Apply Corners", use_container_width=True, type="primary"):
                         image_cv = cv2.cvtColor(np.array(original_image), cv2.COLOR_RGB2BGR)
                         pts_scaled = np.array(st.session_state.points_map[file_key], dtype="float32") * scale_ratio 
                         warped_cv = four_point_transform(image_cv, pts_scaled)
                         st.session_state.processed_images[f"{file_key}_warp"] = Image.fromarray(cv2.cvtColor(warped_cv, cv2.COLOR_BGR2RGB))
-                        st.rerun() # full rerun to update result image
+                        st.rerun()
 
             manual_tool()
 
