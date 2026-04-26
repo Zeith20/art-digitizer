@@ -15,11 +15,12 @@ if 'current_index' not in st.session_state: st.session_state.current_index = 0
 if 'processed_images' not in st.session_state: st.session_state.processed_images = {}
 if 'last_click' not in st.session_state: st.session_state.last_click = None
 if 'persisted_files' not in st.session_state: st.session_state.persisted_files = []
+if 'last_upload_id' not in st.session_state: st.session_state.last_upload_id = ""
 
 # --- SIDEBAR CONTROLS ---
 with st.sidebar:
-    st.header("Admin Tools")
-    if st.button("🗑️ Reset All & Clear Uploads", use_container_width=True):
+    st.header("Batch Controls")
+    if st.button("🗑️ Clear All Uploads", use_container_width=True):
         st.session_state.persisted_files = []
         st.session_state.processed_images = {}
         st.session_state.points_map = {}
@@ -77,36 +78,29 @@ def analyze_shape_and_get_corners(pill_image_with_alpha):
     cnts, _ = cv2.findContours(alpha, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not cnts: return None, "none"
     c = max(cnts, key=cv2.contourArea)
-    peri = cv2.arcLength(c, True)
-    approx = cv2.approxPolyDP(c, 0.02 * peri, True)
-    area = cv2.contourArea(c)
-    rect_points = cv2.minAreaRect(c)
-    rect_area = rect_points[1][0] * rect_points[1][1]
-    is_rectangular = (len(approx) == 4) or (rect_area > 0 and (area / rect_area) > 0.85)
-    
-    if is_rectangular:
-        hull = cv2.convexHull(c).reshape(-1, 2)
-        s, diff = hull.sum(axis=1), np.diff(hull, axis=1)
-        pts = np.array([hull[np.argmin(s)], hull[np.argmin(diff)], hull[np.argmax(s)], hull[np.argmax(diff)]], dtype="float32")
-        return pts, "rectangle"
-    return None, "irregular"
+    hull = cv2.convexHull(c).reshape(-1, 2)
+    s, diff = hull.sum(axis=1), np.diff(hull, axis=1)
+    return np.array([hull[np.argmin(s)], hull[np.argmin(diff)], hull[np.argmax(s)], hull[np.argmax(diff)]], dtype="float32"), "rectangle"
 
 try:
-    # 1. FILE UPLOAD
+    # 1. FILE UPLOAD (Limited rerun logic)
     uploaded_files = st.file_uploader("Upload drawings", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
-
-    # 2. PERSISTENCE LOGIC: Keep files even if uploader flickers
+    
     if uploaded_files:
-        st.session_state.persisted_files = uploaded_files
+        current_id = "-".join([f"{f.name}_{f.size}" for f in uploaded_files])
+        if st.session_state.last_upload_id != current_id:
+            st.session_state.persisted_files = uploaded_files
+            st.session_state.last_upload_id = current_id
+            st.session_state.current_index = 0
 
     if st.session_state.persisted_files:
         num_files = len(st.session_state.persisted_files)
-        st.session_state.current_index = min(st.session_state.current_index, num_files - 1)
+        st.session_state.current_index = max(0, min(st.session_state.current_index, num_files - 1))
         
         current_file = st.session_state.persisted_files[st.session_state.current_index]
         file_key = f"{current_file.name}_{current_file.size}"
 
-        # 3. NAVIGATION
+        # 2. NAVIGATION
         c_nav1, c_nav2, c_nav3 = st.columns([1, 1, 1])
         with c_nav1:
             if st.button("⬅️ Previous") and st.session_state.current_index > 0:
@@ -118,7 +112,7 @@ try:
                 st.session_state.current_index += 1
                 st.rerun()
 
-        # 4. LOAD IMAGE
+        # 3. LAZY IMAGE LOAD
         if f"img_{file_key}" not in st.session_state:
             img = Image.open(current_file).convert("RGB")
             st.session_state[f"img_{file_key}"] = img
@@ -135,15 +129,14 @@ try:
 
         # --- STEP 1: AI SCAN ---
         if not has_scanned:
-            st.info("Image loaded. Click button to analyze.")
             st.image(ui_image, use_container_width=True)
             if REMBG_AVAILABLE:
                 if st.button("🚀 Start AI Auto-Digitize", use_container_width=True, type="primary"):
                     with st.spinner('Analyzing...'):
                         cleansed = rembg_remove(original_image)
                         st.session_state.processed_images[f"{file_key}_ai"] = cleansed
-                        pts, shape_type = analyze_shape_and_get_corners(cleansed)
-                        if shape_type == "rectangle" and pts is not None:
+                        pts, _ = analyze_shape_and_get_corners(cleansed)
+                        if pts is not None:
                             st.session_state.points_map[file_key] = [(int(p[0] / scale_ratio), int(p[1] / scale_ratio)) for p in pts]
                             image_cv = cv2.cvtColor(np.array(original_image), cv2.COLOR_RGB2BGR)
                             warped_cv = four_point_transform(image_cv, pts)
@@ -151,19 +144,19 @@ try:
                         else:
                             st.session_state.processed_images[f"{file_key}_result"] = cleansed
                         st.rerun()
-            else: st.error("AI Library unavailable.")
+            else: st.error("AI Unavailable.")
 
         # --- STEP 2: RESULTS ---
         else:
             if f"{file_key}_result" in st.session_state.processed_images:
-                st.subheader("✨ Digitized Result")
+                st.subheader("✨ Result")
                 st.image(st.session_state.processed_images[f"{file_key}_result"], use_container_width=True)
                 
                 c_res1, c_res2 = st.columns(2)
                 with c_res1:
                     buf = io.BytesIO()
                     st.session_state.processed_images[f"{file_key}_result"].save(buf, format="PNG")
-                    st.download_button("💾 Download PNG", buf.getvalue(), f"scan_{current_file.name}.png", "image/png", use_container_width=True)
+                    st.download_button("💾 Download", buf.getvalue(), f"scan_{current_file.name}.png", "image/png", use_container_width=True)
                 with c_res2:
                     if st.button("🔄 Redo AI", use_container_width=True):
                         if f"{file_key}_ai" in st.session_state.processed_images: del st.session_state.processed_images[f"{file_key}_ai"]
@@ -171,18 +164,16 @@ try:
                         st.session_state.points_map[file_key] = []
                         st.rerun()
 
-            # --- STEP 3: MANUAL TOOL ---
             @st.fragment
             def manual_tool():
                 st.divider()
-                with st.expander("📍 Fine-tune Corners / Forced Warp"):
+                with st.expander("📍 Fine-tune Corners"):
                     pts = st.session_state.points_map.get(file_key, [])
                     if IMAGE_COORDS_AVAILABLE:
                         temp_ui = ui_image.copy()
                         draw = ImageDraw.Draw(temp_ui)
                         for i, p in enumerate(pts):
                             draw.ellipse([p[0]-6, p[1]-6, p[0]+6, p[1]+6], fill="red", outline="white", width=2)
-                            draw.text((p[0]+10, p[1]+10), str(i+1), fill="red")
                         
                         value = streamlit_image_coordinates(temp_ui, key=f"coords_{file_key}")
                         if value:
@@ -202,13 +193,10 @@ try:
                             warped_cv = four_point_transform(image_cv, pts_scaled)
                             st.session_state.processed_images[f"{file_key}_result"] = Image.fromarray(cv2.cvtColor(warped_cv, cv2.COLOR_BGR2RGB))
                             st.rerun()
-
             manual_tool()
-            with st.expander("🖼️ View Original Background-Removed Mask"):
-                st.image(st.session_state.processed_images[f"{file_key}_ai"], use_container_width=True)
 
     else: st.info("Upload images to begin.")
 
 except Exception as e:
-    st.error("🚨 An error occurred!")
+    st.error("🚨 Connection Error!")
     st.code(traceback.format_exc())
