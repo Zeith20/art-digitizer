@@ -1,7 +1,12 @@
 import streamlit as st
 import io
+import sys
+import os
 from PIL import Image
 import traceback
+
+# Ensure the app can find modules in the src/ directory
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # Modular Imports
 from src.utils.dependencies import REMBG_AVAILABLE
