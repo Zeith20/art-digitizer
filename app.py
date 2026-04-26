@@ -28,15 +28,14 @@ def load_coords():
 
 streamlit_image_coordinates, IMAGE_COORDS_AVAILABLE = load_coords()
 
-# --- CACHED IMAGE ENGINES ---
-@st.cache_data
+# --- HIGH-CAPACITY CACHED ENGINES ---
+@st.cache_data(max_entries=10) # Auto-cleans old data to save memory
 def get_cutout(img_bytes):
     img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
     return rembg_remove(img) if REMBG_AVAILABLE else img
 
-@st.cache_data
+@st.cache_data(max_entries=10)
 def analyze_and_get_pts(cutout_bytes, scale):
-    """Detects corners and decides if it's a rectangle."""
     img_np = np.array(Image.open(io.BytesIO(cutout_bytes)))
     if img_np.shape[2] < 4: return None, "none"
     alpha = img_np[:, :, 3]
@@ -46,11 +45,10 @@ def analyze_and_get_pts(cutout_bytes, scale):
     c = max(cnts, key=cv2.contourArea)
     hull = cv2.convexHull(c).reshape(-1, 2)
     s, d = hull.sum(axis=1), np.diff(hull, axis=1)
-    # Order: TL, TR, BR, BL
     raw_pts = np.array([hull[np.argmin(s)], hull[np.argmin(d)], hull[np.argmax(s)], hull[np.argmax(d)]], dtype="float32")
     return [(int(p[0]/scale), int(p[1]/scale)) for p in raw_pts], "rectangle"
 
-@st.cache_data
+@st.cache_data(max_entries=10)
 def get_flattened(img_bytes, ui_pts, scale):
     img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
     image_cv = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
@@ -67,21 +65,28 @@ def get_flattened(img_bytes, ui_pts, scale):
     warped = cv2.warpPerspective(image_cv, M, (w, h))
     return Image.fromarray(cv2.cvtColor(warped, cv2.COLOR_BGR2RGB))
 
-# Session State
+# Lightweight Session State
 if 'points_map' not in st.session_state: st.session_state.points_map = {}
 if 'current_index' not in st.session_state: st.session_state.current_index = 0
 if 'scanned' not in st.session_state: st.session_state.scanned = set()
 if 'last_click' not in st.session_state: st.session_state.last_click = None
 
 try:
-    # 1. QUEUE UPLOAD
-    uploaded_files = st.file_uploader("Select images from your folder", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
+    # 1. STREAMING UPLOADER (Max 200 files)
+    uploaded_files = st.file_uploader("Select your folder images", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
     
     if uploaded_files:
         num_files = len(uploaded_files)
         st.session_state.current_index = max(0, min(st.session_state.current_index, num_files - 1))
         
-        # 2. NAVIGATION
+        # 2. LIGHTWEIGHT NAVIGATION
+        with st.sidebar:
+            st.header("Folder Processing")
+            st.info(f"Loaded {num_files} images.")
+            st.session_state.current_index = st.number_input("Current Image", 1, num_files, st.session_state.current_index + 1) - 1
+            if st.button("🗑️ Reset Process"):
+                st.session_state.scanned = set(); st.session_state.points_map = {}; st.rerun()
+
         col_nav1, col_nav2, col_nav3 = st.columns([1, 1, 1])
         with col_nav1:
             if st.button("⬅️ Previous") and st.session_state.current_index > 0:
@@ -91,24 +96,24 @@ try:
             if st.button("Next ➡️") and st.session_state.current_index < num_files - 1:
                 st.session_state.current_index += 1; st.rerun()
 
-        # 3. SELECT CURRENT
+        # 3. LAZY LOADING
         current_file = uploaded_files[st.session_state.current_index]
         file_key = f"{current_file.name}_{current_file.size}"
-        file_bytes = current_file.getvalue()
-
-        # Fast Resize
-        img_temp = Image.open(io.BytesIO(file_bytes)).convert("RGB")
-        w, h = img_temp.size
+        
+        # Process ONLY when needed
+        img_raw = Image.open(current_file).convert("RGB")
+        w, h = img_raw.size
         scale = w / 450
-        ui_img = img_temp.resize((450, int(h / scale)))
+        ui_img = img_raw.resize((450, int(h / scale)))
 
         # --- STEP 1: AI SCAN ---
         if file_key not in st.session_state.scanned:
-            st.subheader(f"Current: {current_file.name}")
+            st.subheader(f"📄 {current_file.name}")
             st.image(ui_img, use_container_width=True)
             if REMBG_AVAILABLE:
                 if st.button("🚀 Start AI Auto-Digitize", use_container_width=True, type="primary"):
                     with st.spinner('Analyzing...'):
+                        file_bytes = current_file.getvalue()
                         cutout = get_cutout(file_bytes)
                         buf = io.BytesIO(); cutout.save(buf, format="PNG")
                         pts, shape = analyze_and_get_pts(buf.getvalue(), scale)
@@ -121,9 +126,10 @@ try:
         # --- STEP 2: RESULTS ---
         else:
             pts = st.session_state.points_map.get(file_key, [])
+            file_bytes = current_file.getvalue()
             if len(pts) == 4:
                 res = get_flattened(file_bytes, pts, scale)
-                st.subheader("✨ Final Scan")
+                st.subheader("✨ Digitized Scan")
             else:
                 res = get_cutout(file_bytes)
                 st.subheader("✨ Clean Cutout")
@@ -135,7 +141,7 @@ try:
                 buf = io.BytesIO(); res.save(buf, format="PNG")
                 st.download_button("💾 Download", buf.getvalue(), f"scan_{current_file.name}.png", "image/png", use_container_width=True)
             with c2:
-                if st.button("🔄 Reset Image", use_container_width=True):
+                if st.button("🔄 Reset This Image", use_container_width=True):
                     st.session_state.scanned.discard(file_key)
                     st.session_state.points_map.pop(file_key, None)
                     st.rerun()
@@ -167,8 +173,8 @@ try:
             manual_tool()
 
     else:
-        st.info("Select one or more images from your folder to begin.")
+        st.info("Select images from your folder (up to 200 files supported).")
 
 except Exception as e:
-    st.error("🚨 Connection issue or file error. Please refresh.")
+    st.error("🚨 Connection issue. Please refresh.")
     st.code(traceback.format_exc())
