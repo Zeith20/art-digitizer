@@ -3,7 +3,6 @@ from PIL import Image, ImageDraw
 import numpy as np
 import cv2
 import io
-import base64
 import traceback
 
 # --- PAGE SETUP ---
@@ -30,12 +29,6 @@ def load_canvas():
 st_canvas, CANVAS_AVAILABLE = load_canvas()
 
 # --- UTILS ---
-def get_image_base64(img):
-    """Converts PIL image to base64 for guaranteed client-side rendering."""
-    buffered = io.BytesIO()
-    img.save(buffered, format="PNG")
-    return "data:image/png;base64," + base64.b64encode(buffered.getvalue()).decode()
-
 def order_points(pts):
     rect = np.zeros((4, 2), dtype="float32")
     s = pts.sum(axis=1)
@@ -96,7 +89,6 @@ try:
         display_width = 450
         scale_ratio = width / display_width
         ui_image = img_raw.resize((display_width, int(height / scale_ratio)))
-        ui_base64 = get_image_base64(ui_image)
 
         # Navigation
         c_nav1, c_nav2, c_nav3 = st.columns([1, 1, 1])
@@ -151,7 +143,7 @@ try:
                         st.session_state.canvas_key += 1
                         st.rerun()
 
-            # --- HARD-FIXED MANUAL TOOL ---
+            # --- MANUAL TOOL ---
             st.divider()
             st.subheader("📍 Manual Corner Correction")
             st.caption("Drag dots to refine. No page reloads! Redo points by clicking 'Redo Scan' above.")
@@ -167,15 +159,16 @@ try:
                         "lockScalingX": True, "lockScalingY": True, "lockRotation": True
                     })
 
+                # Reverted to background_image but kept unique key to force load
                 canvas_result = st_canvas(
-                    background_url=ui_base64, # ONLY BASE64 TO PREVENT BLACK SCREEN
+                    background_image=ui_image,
                     update_streamlit=False, 
                     height=ui_image.height,
                     width=ui_image.width,
                     drawing_mode="point" if len(existing_pts) < 4 else "transform",
                     point_display_radius=10,
                     initial_drawing=initial_drawing if existing_pts else None,
-                    key=f"canvas_v9_{file_key}_{st.session_state.canvas_key}",
+                    key=f"canvas_v11_{file_key}_{st.session_state.canvas_key}",
                 )
 
                 if st.button("🚀 Apply Manual Correction", use_container_width=True, type="primary"):
